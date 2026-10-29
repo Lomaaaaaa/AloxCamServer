@@ -20,7 +20,8 @@ exceptions; at the TCP and log boundaries it rebuilds the same codes and source 
 `Get Section` [Doc6 p.1095–1098], `Read Key` and its instances [Doc6 p.1247–1291], `Read Value Without Comment`
 [Doc6 p.1280–1283], `Remove Quotes` [Doc6 p.1268–1271], `Unescape String` [Doc6 p.1263–1266], `Common Path to Specific Path`
 [Doc6 p.1251–1254], `Write Key` instances [Doc6 p.1052–1085, 1128–1131], `Close Config Data` [Doc6 p.1226–1229],
-`Save Config File` / `Config to String` [Doc6 p.1230–1242]. NI `error.llb`: `Clear Errors.vi` [Doc6 p.57–59],
+`Save Config File` / `Config to String` [Doc6 p.1230–1242], `8.6CompatibleGlobalVar` [Doc6 p.1243–1246]. OpenG
+`Multi-line String to Array` [Doc6 p.83–86]. NI `error.llb`: `Clear Errors.vi` [Doc6 p.57–59],
 `Error Cluster From Error Code.vi` [Doc5 p.1–6]. NI `Application Directory.vi` [Doc6 p.61–63]. Custom error constants:
 `alox_camera_server_get_image_state_machine.vi` [Doc6 p.555], `alox_camera_server_simulation.vi` [Doc6 p.921],
 `alox_camera_server_autofocus.vi` [Doc6 p.608], refocus VI [Doc6 p.1034–1037], `HW TCP Extract TCP Data.vi` [Doc6 p.1153].
@@ -123,7 +124,7 @@ All three do: `exe ← tools_application_executable_folder(error in)`; `cfg ← 
 
 | Situation | Result |
 |---|---|
-| `error in` already in error | No file access. `Read Key` returns the default; `error out` = `error in`. Result: the **default folder**. |
+| `error in` already in error | No file access. `Read Key` returns the default; `error out` = `error in`. Result: the **default folder**. (Never the case in this server: every caller leaves `error in` unwired [main VI frame d3; Doc6 p.432, 1220].) |
 | `alox_setup.ini` missing, `<exe>` writable | `Load.vi` **creates an empty file** ("File does not exist … Create file") [Doc6 p.254]. Key absent → default. No error. |
 | `alox_setup.ini` missing, `<exe>` read-only (e.g. under `C:\Program Files`) | Creation fails → error → default folder plus an error **(inferred)**. |
 | Key present with an empty value (`settings =`) | An **empty path**, not the default and not an error (NI raises "Config type invalid" only for a non-empty NaP) [Doc6 p.1249]. `alox.ini` then becomes the relative path `alox.ini` and cannot be opened **(inferred)**, so every `alox.ini` key takes its default. |
@@ -203,9 +204,9 @@ vision = D:\alox\02-vision
 data = D:\alox\02-Vision\data
 ```
 
-Path values are read **raw** (§6.2). Write them **without quotes**: `settings = "D:\alox\settings"` would keep the quotes inside the
-path. The NI common form `/D/alox/settings` is also accepted (§6.3). The file is never written; it is only created empty when it is
-missing.
+Path values are unquoted but **not unescaped** (§6.2): `D:\alox\settings` and `"D:\alox\settings"` give the same path, and
+backslashes are kept literally. The NI common form `/D/alox/settings` is also accepted (§6.3). The file is never written; it is only
+created empty when it is missing.
 
 ---
 
@@ -227,9 +228,8 @@ inner sequence, frames 0..6, run in order:
   6  Close Config Data(cfg)                                 [main VI frame d61]
 ```
 
-- `Close Config Data` has the input `write file if changed (T)` [Doc6 p.1226]. It is unwired, and nothing was modified, so nothing
-  is written **(inferred)**. (An earlier analysis named this input "write configuration file?" with default FALSE. The printed
-  connector pane shows the name above. Either way, nothing is written.)
+- `Close Config Data` has the input `write file if changed (T)` (default TRUE) [Doc6 p.1226]. It is unwired, and nothing was
+  modified, so nothing is written **(inferred)**.
 - A missing `alox.ini` in an existing folder is **created empty**, and every key takes its default.
 - Results go only to front-panel objects, which the loops read later through local variables
   ([01-architecture.md](01-architecture.md) §3.4). `found?` outputs are never wired.
@@ -412,9 +412,10 @@ zmax_DBL = 20
 |---|---|
 | Lines | The text is split on the regex `[\n\r]+`: CRLF, LF and CR all work, and empty lines disappear. |
 | Section header | A line matching `^[\t\s]*\[[^\]]+\]`. The name is the text between the brackets (whether spaces inside the brackets are trimmed: **(unknown)**). |
-| Before the first section | Lines go into an unnamed first section ("the first section is for ini file's comment" [Doc6 p.259]). Keys there cannot be read. |
+| Before the first section | Lines go into an unnamed first section ("the first section is for ini file's comment" [Doc6 p.259]). This server never reads keys there. |
 | Key/value line | A line matching `^[\t\s]*[^\t\s;=\n\r][^=\n\r]*[\s\t]*=.*`. It splits at the **first** `=`, and the key is trimmed. A line starting with `#` and containing `=` is a **key** (named `# …`), not a comment. |
-| Value | If the right-hand side starts with a quote, the whole text is kept, quotes and any `;` included (exact test **(inferred)**). Otherwise the value is the text before the first `;`, trimmed, and the rest is a comment. |
+| Value | The text after the first `=` is tested with `Remove Quotes` (`in quotes?` output) [Doc6 p.73, 1270]: after leading blanks, it must start with `"` (or `'`) and end with the same quote followed only by blanks. If so, the whole trimmed text is kept, quotes and any `;` inside included. Otherwise the value is the text before the first `;`, trimmed, and the rest is a comment. So `"HighMag" ; note` is cut at the `;` (value `"HighMag"`), whereas `"a;b"` is kept whole. |
+| Compatibility mode | `String to Config` switches to looser regexes (`^[\t\s]*\[.+\]` for sections, `^[\t\s]*.+` for key/value lines) when NI's global `8.6 compatible?` is TRUE [Doc6 p.100, 267]. The global is FALSE by default [Doc6 p.1244], and no ALOX VI sets it, so the strict rules above apply. |
 | Other lines | Kept as comments (e.g. `; text`, `# text`). |
 | Lookup | `Get Section` / `Get Key` compare **lower-cased** names and return the **first** match [Doc6 p.1093, 1097]. The requested key is trimmed first. A duplicated section hides the second copy completely. |
 | Missing section or key | The default value, `found? = FALSE`, **no error** [Doc6 p.1288]. |
@@ -427,11 +428,11 @@ escapes, no decimal comma, `#` comments, `DuplicateSectionError`). Use the dedic
 
 | Instance | Text used | Conversion | On failure |
 |---|---|---|---|
-| String (`read raw string? = F`) | stored value | `Remove Quotes` (leading/trailing blanks, then one pair of `"…"` or `'…'`), then `Unescape String`: `\\` → `\`, and `\XX` with `XX` in `[01][0-9A-F]` → the character with that hex code. Any other `\` is kept. | — |
+| String (`read raw string? = F`) | stored value | `Remove Quotes` [Doc6 p.1270]: if the value (after leading blanks) starts with `"` or `'` and ends with the same quote plus optional blanks, the text between the quotes; otherwise the value unchanged. Then `Unescape String` [Doc6 p.1265]: `\\` → `\`, and `\XX` with `XX` matching `[01][0-9A-F]` (upper-case hex only) → the character with that code. Any other `\` is kept. | — |
 | I32 / U32 | `Read Value Without Comment` (Remove Quotes, then cut at the first `;`) | `Decimal String To Number`: leading blanks, optional sign, decimal digits, stops at the first other character (`12abc` → 12, `0x10` → 0, `3.7` → 3) | nothing parsed → default + error "Config type invalid" |
 | Double | idem | Two scans, `%.;%f` (point) and `%,;%f` (comma); the one consuming more characters wins. Both `24.6` and `24,6` give 24.6. | default + error |
 | Boolean | idem | Text exactly `0` or `1` → `== "1"`; otherwise a boolean scan of `TRUE` / `FALSE` (case-insensitive **(inferred)**) | default + error (`yes`, `on` fail) |
-| Path | stored value **raw**: no unquoting, no unescaping, no comment cut beyond §6.1 | `Common Path to Specific Path` (§6.3), then string → path. An empty value gives an **empty path** (not the default). | non-empty NaP → error |
+| Path | `Read Key (String)` with `read raw string? = TRUE` [Doc6 p.1249]. "Raw" skips only `Unescape String`: `Remove Quotes` still runs [Doc6 p.1260]. No comment cut beyond §6.1. | `Common Path to Specific Path` (§6.3), then string → path. An empty value gives an **empty path** (not the default). | non-empty invalid path → error |
 | any | — | `error in` in error → nothing read, value = default, error passed through | — |
 
 The error is "Config type invalid" with source `Read Key (<type>).vi`. Its numeric code comes from an NI error ring that the
@@ -462,9 +463,10 @@ common-form paths and decimal commas, which §6.6 does.
 ### 6.5 Safe authoring rules (for people editing the INI files)
 
 1. Keep each key in its exact section, and keep the type suffix in the key name. Case does not matter.
-2. Put comments on their own lines, starting with `;`. Do not add a comment after a quoted value.
-3. Path keys (`[folders] *`, `*_PATH`): no quotes. Native `D:\x` or common `/D/x` both work.
-4. String keys: quotes are optional. In a string, `\\` means one backslash and `\0A`…`\1F` are control characters, so a Windows path
+2. Put comments on their own lines, starting with `;`. A trailing `; comment` after a value also works, unless the value itself is
+   quoted and contains a `;`.
+3. Path keys (`[folders] *`, `*_PATH`): quotes optional. Native `D:\x` or common `/D/x` both work, and backslashes are literal.
+4. String keys: quotes are optional. In a string, `\\` means one backslash and `\00`…`\1F` are control characters, so a Windows path
    in a `_STR` key can be corrupted.
 5. Numbers: decimal only, no thousands separator. `baudrate_I32` is an **index 0–3**, not a baud rate.
 6. Save as ANSI (cp1252) or plain ASCII, without a BOM.
@@ -514,9 +516,8 @@ class NIConfig:
             if not _KEY_VALUE.match(line):
                 continue                                   # empty line or comment
             key, _, rest = line.partition("=")
-            rest = rest.strip(" \t")
-            if rest.startswith('"'):                       # quoted: keep everything, ';' included
-                value = rest
+            if cls._in_quotes(rest):                       # Parse Key Value Pair [Doc6 p.73]
+                value = rest.strip(" \t")                  # quoted: keep everything, ';' included
             else:
                 value = rest.partition(";")[0].strip(" \t")
             sections[-1][1].append((key.strip(" \t"), value))
@@ -534,16 +535,25 @@ class NIConfig:
         return None
 
     @staticmethod
-    def _remove_quotes(v: str) -> str:                     # Remove Quotes [Doc6 p.1270]
-        v = v.strip(" \t")
-        for q in ('"', "'"):
-            if len(v) >= 2 and v[0] == q and v[-1] == q:
-                return v[1:-1]
-        return v
+    def _unquote(v: str) -> tuple[bool, str]:             # Remove Quotes [Doc6 p.1270]: (in quotes?, without quotes)
+        s = v.lstrip(" \t")
+        if s[:1] in ('"', "'"):
+            m = re.search(re.escape(s[0]) + r"[ \t]*$", s[1:])
+            if m:
+                return True, s[1:][:m.start()]
+        return False, v                                    # not quoted: input returned unchanged
 
-    def _without_comment(self, section: str, key: str) -> Optional[str]:   # Read Value Without Comment
+    @classmethod
+    def _in_quotes(cls, v: str) -> bool:
+        return cls._unquote(v)[0]
+
+    @classmethod
+    def _remove_quotes(cls, v: str) -> str:
+        return cls._unquote(v)[1]
+
+    def _without_comment(self, section: str, key: str) -> Optional[str]:   # Read Value Without Comment [Doc6 p.1282]
         v = self.raw(section, key)
-        return None if v is None else self._remove_quotes(v).partition(";")[0].strip(" \t")
+        return None if v is None else self._remove_quotes(v).partition(";")[0]
 
     def read_str(self, section: str, key: str, default: str) -> str:
         v = self.raw(section, key)
@@ -589,11 +599,11 @@ class NIConfig:
         return m.group(1).lower() == "true"
 
     def read_path(self, section: str, key: str, default: str) -> str:
-        """Windows path string. Raw value: no unquoting, no unescaping."""
+        """Windows path string. Quotes removed, no unescaping ('raw' read) [Doc6 p.1249, 1260]."""
         v = self.raw(section, key)
         if v is None:
             return default
-        s = v.replace("/", "\\")                           # Common Path to Specific Path (Windows)
+        s = self._remove_quotes(v).replace("/", "\\")     # Common Path to Specific Path (Windows)
         if s.startswith("\\") and not s.startswith("\\\\") and len(s) >= 2:
             s = s[1] + ":" + s[2:]                         # "/D/alox/x" -> "D:\alox\x"
         return s                                           # "" stays "" (empty path, not the default)
@@ -643,7 +653,7 @@ def make_getter(cfg: NIConfig, warn: Callable[[str], None]):
 | `Log Ref` | reference to a string indicator | on-screen log | on-screen log |
 | `Extra String` | string | printed in parentheses | printed in parentheses |
 | `Max Lines` | I32, default 1000 (callers wire `#Lines`) | on-screen trimming | on-screen trimming |
-| `Core#` | I32 (callers wire `Core #`) | used only in a `Disabled` frame (`logs\core%d`) → **no effect** | idem |
+| `Core#` | I32, default 1000 (callers wire `Core #`) [Doc6 p.431, 1219] | used only in a `Disabled` frame (`logs\core%d`) → **no effect** | idem |
 | `error in` → `error out` | error cluster | logs **only if `status = TRUE`**; `error out = error in` | logs **always**; `error out = error in` |
 
 This server uses only `Server Type = "Camera"` (camera loop) and `"Z Stage"` (Z loop). The `Monochromator` and `XY Stages` branches
@@ -661,7 +671,8 @@ Log Server Error(Command, Camera Type, Server Type, Log Ref, Extra, Max Lines, C
      stamp ← FormatDateTime("%d/%m/%Y - %H:%M:%S%3u - " + tag, now)          # local time (inferred)
      name  ← Server Type == "Camera" ? item name of Command : ""
      line  ← stamp + name + Format("(%d) : %s (%s)", code, source, Extra)
-     old   ← Log Ref.Value ; if number_of_lines(old) > Max Lines: old ← ""
+     old   ← Log Ref.Value
+     if ArraySize(MultiLineStringToArray(old)) > Max Lines: old ← ""          # OpenG VI [Doc6 p.83]
      Log Ref.Value ← old + EOL + line + EOL ; Clear Errors
   frame 1 "Add log line to daily log file":
      folder ← tools_alox_shared_vision_folder() \ "logs"                      # Disabled frame would add "core<Core#>"
@@ -676,8 +687,9 @@ Log Server Infos(...): same, except: no status test; no command name; tags "INFO
   Set File Position(from = end) → append.
 ```
 
-The file chain starts from its own error wire: a write failure never changes `error out`. Both `Clear Errors` calls swallow every
-indicator and file error, so a failed write loses the line silently [Doc6 p.432, 1220].
+The default tags are `ERR -` and `INFO -` with no trailing space (string constants checked at 500 dpi [Doc6 p.432, 1220]).
+`ERR -` is never reached here, but `INFO -` is the tag of every info line this server writes (`Server Type = "Z Stage"`). The file chain starts from its own error wire: a write failure never changes `error out`. Both
+`Clear Errors` calls swallow every indicator and file error, so a failed write loses the line silently [Doc6 p.432, 1220].
 
 ### 7.3 File names, folders and rotation
 
@@ -729,8 +741,8 @@ The only `Log Server Infos` calls are in `Z Move Absolute` / `Z Move Relative` w
 
 | Object | Behaviour |
 |---|---|
-| `Log Ref` target | Probably the string indicator **`String`**, not `Log` **(inferred)** ([01-architecture.md](01-architecture.md) §8). `Cam Set Led` overwrites `String` with `"us"`/`"gi"`. |
-| Trimming | Before appending, if the text has **more than `Max Lines` lines** (`[log] maxlines_I32`, default 1000), it is cleared entirely. This is not a rolling window. Each entry adds `EOL + line + EOL`, so one blank line sits between entries, and the indicator is wiped after about 500 entries **(inferred: exact line counting not visible)**. |
+| `Log Ref` target | `Log Ref` is wired to a static control reference labelled `String` [main VI frame d195], so the lines go to the string indicator **`String`**, not to `Log` **(inferred: front-panel labels are unique)** ([01-architecture.md](01-architecture.md) §8). `Cam Set Led` overwrites `String` with `"us"`/`"gi"`. |
+| Trimming | Before appending, if the text has **more than `Max Lines` lines** (`[log] maxlines_I32`, default 1000), it is cleared entirely. This is not a rolling window. Lines are counted with OpenG `Multi-line String to Array` + `Array Size` [Doc6 p.432; p.83]; that VI drops a trailing empty line. Each entry adds `EOL + line + EOL`, so one blank line sits between entries and n entries count as 2n lines: with the default, the text is wiped when the 502nd entry arrives **(inferred from the OpenG description)**. |
 | `Log` indicator, `CLEAR` button | `Log` is never written; `CLEAR` empties it [main VI frame d71]. |
 | `Log` command | Stores `{Log, Path, Max Lines, Max Count}` in the `Cam Log Data` control, which nothing reads ("#TODO: Log every cameras/Z actions into files") [main VI frames d76–d77]. No logging effect ([03-command-reference.md](03-command-reference.md)). |
 
@@ -799,7 +811,7 @@ class EventLogs:
         if server_type == "Camera":
             tag = "ERR (LOW MAG)-" if camera_type == "Low Mag." else "ERR (HI MAG)-"
         else:
-            tag = ERR_TAG.get(server_type, "ERR - ")                   # trailing space of the default tag: (unknown)
+            tag = ERR_TAG.get(server_type, "ERR -")
         now = datetime.now()
         name = (command or "") if server_type == "Camera" else ""
         line = self._stamp(now, tag) + name + f"({err.code}) : {err.source} ({extra})"
@@ -853,19 +865,21 @@ tracebacks. Proposed location: `<vision>\logs\<yymmdd>_camera_server_diag.log`.
 
 | Pattern | Where | Detail |
 |---|---|---|
-| Decorate then log then reply | every command handler | `source += <suffix>` only when `status = TRUE`; `Log Server Error`; then the reply. Order variants: [03-command-reference.md](03-command-reference.md) §4. |
+| Decorate, log, reply | camera handlers | `source += <suffix>` only when `status = TRUE`; `Log Server Error`; then the reply. Order variants: [03-command-reference.md](03-command-reference.md) §4.1–4.2. |
+| Reply, then log | Z handlers | no source decoration; reply, then `Log Server Error` with `Server Type = "Z Stage"` ([03-command-reference.md](03-command-reference.md) §4.3) |
 | Error-only replies probably not sent | `Enqueue Send Error Cluster Reponse.vi` | [02-tcp-protocol.md](02-tcp-protocol.md) §8.4 (Q17) |
 | `error out` front-panel object | stage 1 resets it; handlers write it | appended every camera-loop iteration to the unbounded `Array` history ([01-architecture.md](01-architecture.md)) |
 | INI reads | stage 2 | all errors ignored, defaults used (§5.4) |
 | Folder VI errors | stage 2 | `error out` unwired [main VI frame d3] |
 | PI macro check | stage 2, frame 4 | `Clear Errors` (all) [main VI frames d59–d60] |
 | TCP loop timeout case | `Enqueue Read` | `Clear Errors` [main VI frame d71] |
-| IMAQdx "Invalid camera session" | `Cam Get Image`, `Cam Get Acquisition Status`, `Cam Stop`, camera-loop timeout case | `Clear Errors(−1074360316)` only [main VI p.14, 17, 19, 29] |
+| IMAQdx "Invalid camera session" | `Cam Get Image` (HM, LM), `Cam Get Acquisition Status`, the (inactive) camera-loop timeout case | `Clear Errors(−1074360316)` only [main VI p.14, 17, 19, 29] |
+| `AcquisitionInProgress` read error | `Cam Stop` | no `Clear Errors`, but a failed read returns FALSE and the FALSE branch discards that error, whatever its code [main VI frames d170–d174; p.23] ([05-camera-acquisition.md](05-camera-acquisition.md) §4.5) |
 | `Cam Start` | TriggerMode write | cleared before `Start Acquisition` [main VI frames d90–d95] |
 | `Cam Software Trigger` | all errors | `Clear Errors` twice: always replies OK [main VI frame d119] |
 | Autofocus / refocus | `VEL?`, `VEL`, `POS?`, overlay, graph errors | cleared ([06-autofocus-refocus.md](06-autofocus-refocus.md)) |
 | Log VIs | their own file and indicator errors | `Clear Errors` [Doc6 p.432, 1220] |
-| Non-error with text | `get_image_state_machine` while waiting | `{FALSE, 0, "lastbuffer:…/ buffercount:…/ buffer t-1:…"}` [Doc6 p.555] |
+| Non-error with text | `get_image_state_machine` while waiting | `{FALSE, 0, "lastbuffer:…/ buffercount:…/ buffer t-1:…"}` [Doc6 p.555]. It only travels the re-enqueue path (`Log Server Error` ignores it, no reply is sent on that path), so it reaches at most the front-panel `error out` **(inferred)** |
 
 ---
 
@@ -880,12 +894,12 @@ tracebacks. Proposed location: `<vision>\logs\<yymmdd>_camera_server_diag.log`.
 | **9031** | `"'refocus' warning (joystick enabled)"` | **TRUE** (despite "warning") | refocus, joystick active (`JON?`) | refocus `Error` state, error log (`Cam Refocus Run` has no reply) | [Doc6 p.1034]; [06](06-autofocus-refocus.md) |
 | **9401** | `"z stage get position timeout"` | TRUE | autofocus Fast mode (30 000 ms) [Doc6 p.608]; refocus `Check Position` / `Wait Focus` (5000 ms) [Doc6 p.1035, 1037] | AF/RF `Error` state, error log | [06](06-autofocus-refocus.md) |
 | **9405** | `"Z move out of range"` | TRUE | `Z Move Absolute` / `Z Move Relative`, target outside `[min(zmin, zmax), max(zmin, zmax)]`. It replaces any earlier error. | ACK reply (probably not sent), Z error log | [main VI frames d233, d236]; [08](08-z-stage.md) |
-| **−1** | `"<caller>.vi<ERR>\nExtra Data Found"` | TRUE | `HW TCP Extract TCP Data.vi`, heartbeat frame with a payload, via `Error Cluster From Error Code` | TCP loop: connection closed and re-listen | [Doc6 p.1153]; [02](02-tcp-protocol.md) §5.3 |
+| **−1** | `"HW TCP Extract TCP Data.vi<ERR>\nExtra Data Found"` (caller-name prefix: §8.1) | TRUE | `HW TCP Extract TCP Data.vi`, heartbeat frame with a payload, via `Error Cluster From Error Code` | TCP loop: connection closed and re-listen (not logged) | [Doc6 p.1153]; [02](02-tcp-protocol.md) §5.3 |
 
-Note on −9011: there is a conflict between the source reports. One analysis gives 9011. The printed constant reads **−9011**
-[Doc6 p.921], and that is the value to reproduce. LabVIEW reserves 5000–9999 and −8999…−8000 for user codes, so −9011 is outside the
-user ranges (probably a sign slip, see D16). The other ALOX codes follow a pattern: 90xx for camera/vision, 94xx for the Z stage
-**(inferred)**.
+Note on −9011: the printed constant is **−9011**, status TRUE, in the `Default` ("Not supported") case of the pixel-type switch
+(checked at 600 dpi [Doc6 p.921]), not 9011. Reproduce −9011. LabVIEW reserves 5000–9999 and
+−8999…−8000 for user codes, so −9011 is outside the user ranges (probably a sign slip, see D16). The other ALOX codes follow a
+pattern: 90xx for camera/vision, 94xx for the Z stage **(inferred)**.
 
 ### 9.2 Vendor and LabVIEW codes the server handles or passes through
 
@@ -1099,7 +1113,7 @@ failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes kee
 | D15 | Unwired `Camera Type` / `Command` inputs: Low Mag errors tagged `HI MAG`; unwired `Command` would print `Get Heartbeat`. | [main VI frames d104–d115]; [Doc6 p.431] | misleading log lines | **Fix** when the camera is known |
 | D16 | Custom code −9011 is negative, outside LabVIEW's user ranges, unlike the other ALOX codes. | [Doc6 p.921] | none functional | **Reproduce** −9011 on the wire |
 | D17 | Code 9031 is called a "warning" but has `status = TRUE`. | [Doc6 p.1034] | refocus aborts | **Reproduce** |
-| D18 | `get_image_state_machine` returns `{FALSE, 0, "<diagnostic text>"}`: "no error" with a source text. | [Doc6 p.555] | a reply could carry the text | **Reproduce** (keep `source` verbatim) |
+| D18 | `get_image_state_machine` returns `{FALSE, 0, "<diagnostic text>"}` while waiting: "no error" with a source text. | [Doc6 p.555] | none for the client: only the re-enqueue path sees it (§8.2) **(inferred)** | **Do not reproduce** (as [05](05-camera-acquisition.md) §10.1); in general keep `source` verbatim whatever `status` |
 | D19 | The on-screen log is wiped completely past `Max Lines`, adds blank lines, and its target (`String`) is overwritten by `Cam Set Led`. `Log` is never written. | [Doc6 p.432]; [main VI frame d71] | no reliable on-screen history | **Fix** (ring buffer) or drop if headless |
 | D20 | "Automatic error handling" state unknown: if enabled, unwired errors would open modal dialogs in the hidden window. | not printed | possible hang of the LabVIEW server | n/a for Python; **ask** (Q30) for root-cause analysis only |
 | D21 | Error-only ACK replies are probably never sent. | [Doc6 p.437] | client timeouts | see [02-tcp-protocol.md](02-tcp-protocol.md) §8.4 (Q17) |
@@ -1107,6 +1121,8 @@ failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes kee
 ---
 
 ## 12. Open questions
+
+"Q<n>" refers to the owner questionnaire [open-questions.md](open-questions.md).
 
 1. **Real configuration files (questionnaire Q12).** What are the actual `alox_setup.ini` and `alox.ini`? This tells us their
    encoding, their quoting style, and whether they hold keys this server does not read. It also lets us run a golden test of the

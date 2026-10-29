@@ -322,8 +322,8 @@ the machine to settle it (questionnaire Q11).
 
 - **Routing.** The TCP loop sends every enum value of `"Z Setup".."Z Do Reference"` to the Z queue [main VI frame d0]. Either
   `Z Do Reference` is the last Z value of the enum (working assumption **(inferred)**), or the Z commands placed after it are never
-  routed (a bug). The numeric values are **(unknown)** (questionnaire Q2, [04-data-types.md](04-data-types.md)). `Exit` reaches the Z loop from the camera loop
-  ([01-architecture.md](01-architecture.md)).
+  routed (a bug). The numeric values are **(unknown)** (questionnaire Q2, [04-data-types.md](04-data-types.md)). `Exit` reaches
+  the Z loop from the camera loop ([01-architecture.md](01-architecture.md)).
 - **End of each command case** (all 19) [main VI frames d221–d248]:
 
 ```text
@@ -690,25 +690,26 @@ The project-wide error model (cluster, custom codes, logging) is in [09-configur
 
 | LabVIEW | pipython (`dev` = `GCSCommands` or `GCSDevice`) | Fidelity note |
 |---|---|---|
-| `PI Open Interface` (RS232) | `PISerial(port, baudrate)` + `settimeout(5000)`, `GCSCommands(GCSMessages(gw))` | pipython sends `CSV?` (and `ERR?`) when building the command object; PISerial default timeout is 7000 ms |
+| `PI Open Interface` (RS232) | `PISerial(port, baudrate)` + `settimeout(5000)`, `GCSCommands(GCSMessages(gw))` | pipython sends `CSV?` + `ERR?` when building the command object (falling back to `*IDN?` if `CSV?` fails) and `*IDN?` once more on the first `qSAI()` (device-name check); PISerial default timeout is 7000 ms |
 | `Close connection if open` | `gateway.close()` | |
-| error check after each VI | `dev.errcheck = False`, then explicit `dev.qERR()` where LabVIEW calls `ERR?` | pipython's default (`True`) sends `ERR?` after every command, which would clear pending errors earlier than LabVIEW |
+| error check after each VI | `dev.errcheck = False`, then an explicit `ERR?` (sketch `check_error`) where LabVIEW calls it | pipython's default (`True`) sends `ERR?` after every command, which would clear pending errors earlier than LabVIEW |
 | `%.;%.4f` | `dev.floatformat = '.4f'` | pipython default `'.12g'`; applied to Python `float` arguments only (an `int` is sent as is), so pass floats |
 | `ERR?.vi` | `dev.read('ERR?')` and parse it (sketch `check_error`) | `qERR()` raises `GCSError(-1004)` on an empty answer, where LabVIEW returns error 100 "No answer on ERR?" |
 | `*IDN?`, `SAI?`, `CST?`, `SVO`, `SVO?`, `RON?`, `TRS?`, `LIM?`, `TMN?`, `TMX?` | `qIDN()`, `qSAI()`, `qCST(ax)`, `SVO(ax, True)`, `qSVO`, `qRON`, `qTRS`, `qLIM`, `qTMN`, `qTMX` | `qIDN()` keeps the final LF: strip it |
-| `MOV`, `MVR`, `VEL`, `VEL?`, `POS?` | `MOV(ax, v)`, `MVR(ax, v)`, `VEL(ax, v)` + `qERR()`, `qVEL(ax)[ax]`, `qPOS(ax)[ax]` | |
+| `MOV`, `MVR`, `VEL`, `VEL?`, `POS?` | `MOV(ax, v)`, `MVR(ax, v)`, `VEL(ax, v)` + `ERR?`, `qVEL(ax)[ax]`, `qPOS(ax)[ax]` | |
 | `FRF?`, `FRF`, `FNL`, `FPL` | `qFRF(ax)[ax]`, `FRF(ax)`, `FNL(ax)`, `FPL(ax)` | |
 | `STP` (as wired: `STP 1`) | `dev.send('STP 1')` | `dev.STP()` sends `STP` without axis; `dev.HLT(ax)` halts smoothly |
 | `#5`, `#7`, `#24` | `IsMoving()`, `IsControllerReady()`, `StopAll(noraise=True)` | `IsMoving()` sends `SAI? ALL` once (cached) to name the bits, an extra frame LabVIEW does not send; `IsControllerReady()` raises `ValueError` on an unknown reply (LabVIEW: 100 "#7 Unknown reply") |
 | `RMC?`, `MAC START` | `qRMC()` (strip final LF), `MAC_START('DH')` | `qMAC('DH')` reads a macro's content |
-| `JAX`, `JON`, `JON?` | `JAX(1, 1, ax)`, `JON(1, True)` + `qERR()`, `qJON(1)[1]` | |
-| `GCSTranslateError` | `GCSError.translate_error(code)` → `"<text> <code>"` | strip the trailing code to get LabVIEW's description |
+| `JAX`, `JON`, `JON?` | `JAX(1, 1, ax)`, `JON(1, True)` + `ERR?`, `qJON(1)[1]` (bool) | |
+| `GCSTranslateError` | `GCSError.translate_error(code)` → `"<text> <code>"` (just `"<code>"` when unknown) | strip the trailing code to get the message (LabVIEW's exact description format: §11) |
 | `Mercury_GCS_Configuration_Setup` | `pitools.startup(dev, refmodes='FNL', servostates=True)` approximates it | `startup` starts with a stop-all and references only if `qFRF()` is FALSE; the explicit sequence of §13.3 is closer |
 | `General wait for movement to stop` | `pitools.waitontarget(dev, axes, timeout=300, polldelay=0.01)` approximates it | different completion test (on-target instead of `#5`); the sketch polls `IsMoving()` like LabVIEW |
 
 ### 13.3 Reference sketch: the controller link (`zstage/pi_stage.py`)
 
-Reference sketch. It reproduces the LabVIEW semantics; it was exercised against a stubbed controller, not against hardware.
+Reference sketch. It reproduces the LabVIEW semantics. It was run with pipython 2.13.0.2 against a simulated single-axis controller
+(a `PIGateway` stub) through the handlers of §13.4, not against hardware.
 
 ```python
 # zstage/pi_stage.py -- reference sketch (LabVIEW-compatible semantics on pipython, no PI DLL)
@@ -1200,8 +1201,10 @@ class ZHandlers:
 Notes on the sketch:
 
 - The Z thread calls `handle()` for each dequeued message, in order. `Exit` returns `Reply(None)` here; the loop itself stops on it.
-- The start-up macro check (§2.4) needs no code in practice: the link is not open at start-up. If it is ever wanted, it is
-  `running_macros()` followed by `mac_start("DH")` when the answer is `"DH"` or `"HOME"`, with all errors ignored.
+- The start-up macro check (§2.4) needs no code in practice, since the link is not open at start-up **(inferred)**. If it is ever
+  wanted, it is `running_macros()` followed by `mac_start("DH")` when the answer is `"DH"` or `"HOME"`, with all errors ignored.
+- The sketch keeps **one** live session in `PiStage` (fix Z18): it does not reproduce the stale `Z Session` copy that the LabVIEW focus
+  jobs read after an automatic re-initialisation.
 - Payload values arrive decoded: `bool` (Get Serial), `float` (speed, positions, limits), enum label `str` (Do Reference),
   `(add_wait_ms, polling_ms, add_wait_only)` and `(joystick_id, joystick_axis)` tuples.
 - The `implicit_z_reinit = False` branch returns GCS code 5 for an unreferenced axis; that code is a proposal, not LabVIEW behaviour.
@@ -1269,6 +1272,7 @@ pipython's `logfile`), the replies and the stage behaviour:
 7. `Z Do Reference` with `FNL` and `FRF`; timing of the reply versus the end of referencing.
 8. Power-cycle the controller, then `Z Move Absolute` (implicit re-initialisation and info log).
 9. `Z Cleanup`, then `Z Get Position` and a focus job (expected failures).
+10. `Z Stop`, then `Z Setup`, then `Z Get Status`: is error 10 discarded by the set-up purge (Z22)?
 
 ---
 
@@ -1279,12 +1283,12 @@ pipython's `logfile`), the replies and the stage behaviour:
 | Z1 | ACK replies are probably not sent when the error is set (9405, set-up failure, timeouts, controller errors). | [Doc6 p.437], §5.1 | The client only sees its own timeout | Follow the project switch `send_error_replies` (questionnaire Q17, [02](02-tcp-protocol.md)). |
 | Z2 | Before each move, a failed or FALSE `FRF?` closes the link and re-runs the full set-up, possibly with a reference move. Errors are cleared and only an info line is logged. | [Doc6 p.141] | Unexpected motion and multi-second blocking | **Reproduce** by default (switch `implicit_z_reinit`, Q24). The fix branch refuses the move instead. |
 | Z3 | The re-initialisation runs before the range check: an out-of-range move can still trigger a reference move, then reply 9405. | [main VI frames d232, d236] | Motion for a rejected request | **Ask**. For `Z Move Absolute` the range can be checked first at no cost. |
-| Z4 | `MOV`/`MVR` do not read `ERR?`: a move refused by the controller (unreferenced, joystick on, outside controller limits) is acknowledged OK. The error appears at the next `ERR?` of an unrelated command. | [Doc6 p.881, p.1214] | Silent failed moves; misattributed errors | **Reproduce** (client-visible). Ask whether the client calls `Z Get Error`/`Z Get Status` after moves (§15). |
+| Z4 | `MOV`/`MVR` do not read `ERR?`: a move refused by the controller (unreferenced, joystick on, outside controller limits) is acknowledged OK. The error appears at the next `ERR?` of an unrelated command. | [Doc6 p.881, p.1215] | Silent failed moves; misattributed errors | **Reproduce** (client-visible). Ask whether the client calls `Z Get Error`/`Z Get Status` after moves (§15). |
 | Z5 | `Z Move Relative` checks `POS?` + move, then sends `MVR`. If the controller adds the distance to the last commanded target **(inferred, GCS 2.0)**, the check is wrong while a move is running. | [main VI frame d237], [Doc6 p.1212] | Range check possibly bypassed while a move is running | **Ask** (§15 item 9). Option: check against the commanded target (`MOV?`) or refuse while `#5` reports motion. |
 | Z6 | `STP` leaves controller error 10 pending: the next `ERR?` reader (`Z Get Status` → FALSE with error 10, `Z Set Speed`/joystick command → error 10) reports it, unless a set-up purge discards it first (Z22). | [Doc6 p.1208], [main VI frame d241] | Spurious errors after a stop | **Reproduce** (client-visible). |
 | Z7 | `STP 1` is sent with an axis argument, while PI's VI documentation recommends `STP` without argument for these systems. Acceptance by the Mercury firmware is unknown. | [Doc6 p.1208–1209] | Possibly a stop that does not stop (safety) | **Verify on hardware first**. If refused, send `STP` (pipython `STP()`) or `HLT 1`. |
 | Z8 | `DH` macro restarted by `Z Get Status`, `Z Stop`, `Z Cleanup` when neither `DH` nor `HOME` runs; reverse logic at start-up; exact string compare. Content unknown. | §10 | Unknown controller actions, possibly motion; a status query has a side effect | **Ask** (Q10, switch `restart_dh_macro`). Read the macros first. |
-| Z9 | `Z Cleanup` queries `RMC?` on the link it has just closed (error reply), and does not reset `Z Inited`. | [main VI frame d248] | Cleanup always "fails" | **Fix**: no query after close (the client sees success). Reset the internal "initialised" flag. Ask only if a client relies on the error. |
+| Z9 | `Z Cleanup` queries `RMC?` on the link it has just closed (error, so probably no reply at all, Z1) **(inferred)**, and does not reset `Z Inited`. | [main VI frame d248] | Cleanup always "fails" | **Reproduce** by default (tied to `restart_dh_macro`, as in the sketch); with the switch off, send nothing after the close and reply success. Reset the internal "initialised" flag (not client-visible). |
 | Z10 | Most commands ignore payload decoding errors and run with typedef defaults: `VEL 1 0.0000` (PI: "should not be set to 0"), `FNL`, move by 0, joystick 1/1. `Z Set Min/Max Limit` overwrites the limit with 0.0 and replies with the error. | §5.2, [Doc6 p.716] | Wrong actions on malformed requests | **Fix**: reply the decoding error without acting. |
 | Z11 | A Z enum value without a case gets no reply (`Default`). | [main VI frame d220] | Client timeout | Project switch `reply_unknown_commands`. |
 | Z12 | `Z Set Min/Max Limit`: no validation, not persisted, controller soft limits unchanged; the INI range is restored at restart. | [main VI frames d246–d247] | Limits silently lost on restart | **Reproduce**; ask whether persistence is wanted. |
