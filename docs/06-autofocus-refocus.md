@@ -83,7 +83,7 @@ Both sub-VIs follow the same pattern [Doc6 p.606, p.1033]:
 |---|---|
 | Error cluster `{status, code, source}` and "error in / error out" chaining | Most NI and PI driver VIs **do nothing** when their `error in` carries an error, and pass it on. A chain of calls therefore stops at the first failure, but the later calls still return their default outputs (0, empty array). |
 | `Clear Errors.vi` [Doc6 p.57–58] | Discards an error: the failure is ignored and the chain continues. |
-| Unwired `error out` | The error is lost. If "Automatic error handling" is enabled in the VI's properties, LabVIEW would instead open a blocking dialog. Whether it is enabled in the focus VIs is **(unknown)** (questionnaire Q30 asks it for the main VI). Concerned here: `JON?` (refocus `Start`), the image display and `IMAQ LowPass` (refocus). |
+| Unwired `error out` | The error is lost. If "Automatic error handling" is enabled in the VI's properties, LabVIEW would instead open a blocking dialog. Whether it is enabled in the focus VIs is **(unknown)** (questionnaire Q41 asks it for the focus VIs; Q30 for the main VI). Concerned here: `JON?` (refocus `Start`), the image display and `IMAQ LowPass` (refocus). |
 | `Index Array` on an empty or too-short array | Returns the element type's default value (0.0 for DBL) instead of failing. A failed `POS?` is therefore read as position **0.0 mm**. |
 | `In Range and Coerce` | Range test and clamp. Each bound can be inclusive or exclusive (filled or hollow diamond on the icon). |
 | `Tick Count (ms)` | Unsigned 32-bit millisecond counter that wraps every ~49.7 days. Use a monotonic clock in Python. |
@@ -187,7 +187,7 @@ the data of whichever procedure ran last on that camera **(inferred from the wir
 
 - **Shape**: N rows × 2 columns, row = `[Z (mm), score]`.
   - Autofocus: one row per measured image, in acquisition order. Slow mode uses the **commanded** Z (`Z Min`, `Z Min+Step`, …), which is
-    never re-read from the stage. Fast mode uses the **time-interpolated** Z (§4.6.3). Before the first measurement the array is empty.
+    never re-read from the stage. Fast mode uses the **time-interpolated** Z (§4.5, `Measure`, Fast). Before the first measurement the array is empty.
   - Refocus: one row **per planned position** from the moment the positions are computed. Rows not yet measured have score `0`
     (`Transpose(Build Array(Positions, Scores))`, zero padding) [Doc6 p.1033]. After a complete scan every row holds its measured score.
 - **On the wire** (`Cam Get Autofocus Data`): DBL 2-D array response = I32 row count, I32 column count, then rows × columns IEEE-754
@@ -908,9 +908,10 @@ Driver facts that shape the behaviour (see [08-z-stage.md](08-z-stage.md)):
 - `VEL.vi` "Sets velocity and checks for error" [Doc6 p.716]: it sends `ERR?` afterwards and turns a non-zero controller code into an
   error. A controller error left pending by an earlier command (for example a refused `MOV`) is therefore reported by the next `VEL`.
 - `MOV.vi` does **not** query `ERR?`. A move refused by the controller (axis not referenced, target outside the controller travel
-  range, possibly an active joystick: the `MOV.vi` help states "Motion commands like MOV are not allowed when a joystick is active on
-  the axis" for the C-867 [Doc6 p.878]; whether the Mercury controller behaves the same is **(unknown)**) is not detected by the `MOV`
-  itself. It only shows up as a position that is never reached **(inferred)**:
+  range, an active joystick: PI's help states it explicitly for Mercury_GCS: "Motion commands like MOV are not allowed when a joystick
+  is active on the axis" [Doc6 p.879]; the same for `MVR` [Doc6 p.1213] and in `JON.vi` [Doc6 p.1204]; see
+  [08-z-stage.md](08-z-stage.md) §9) is not detected by the `MOV` itself. It only shows up as a position that is never reached
+  **(inferred)**:
   - refocus: 9401 after 5 s (`Check Position` / `Wait Focus`);
   - Fast AF, `MOV Z Min` refused: 9401 after 30 s; `MOV Z Max` refused: the stage never leaves `Z Min` and `Wait Started` waits
     **forever**;
@@ -918,6 +919,7 @@ Driver facts that shape the behaviour (see [08-z-stage.md](08-z-stage.md)):
   The pending controller error is reported by the next `VEL` (with `ERR?`), which in the autofocus is only the ignored restore in
   `Finished` / `Error`.
 - `VEL` and `MOV` values are sent with 4 decimals. A fast-AF speed below 0.00005 mm/s would be sent as `0.0000` **(inferred)**.
+  Whether the firmware accepts `VEL 1 0.0000` is **(unknown)** (questionnaire Q35).
 
 ### 7.2 Tolerances and timeouts
 
@@ -943,7 +945,7 @@ Driver facts that shape the behaviour (see [08-z-stage.md](08-z-stage.md)):
   gives NaN. Either way the controller rejects `VEL`, the state becomes `Error` and the job stops **(inferred)**. `Z Max = Z Min` with
   `Duration > 0` gives `VEL 1 0.0000`. If the controller rejects it, the job stops in `Error`; if it accepts it, the `MOV Z Max`
   targets the current position, the stage never leaves `Z Min` and `Wait Started` waits forever (controller behaviour
-  **(unknown)**).
+  **(unknown)**, questionnaire Q35).
 - **Restored speed** = the value read by `VEL?` in `Start`, so a speed set earlier with `Z Set Speed` comes back at the end.
 - `Slow Speed (mm/s)` is never used.
 
@@ -1040,9 +1042,12 @@ error out := no error                                       # internal errors ar
 - **Drive steps from the camera consumer loop**, which already serialises camera access, and drop the self-re-enqueue. After every
   dequeued command, and whenever the queue is empty, the loop executes exactly one focus step. Client commands still interleave with
   steps as in LabVIEW, the deadlock of §3.4 disappears, and no extra thread touches the cameras.
-- **Recommended fixes** (Defects §10): let the job continue after an error, so that the `Error` restore state runs; guard restores
-  against values that were never read; validate parameters at the start command; enforce one job at a time; serialise GCS traffic
-  with the Z loop through a shared lock.
+- **Recommended fixes** (Defects §10): let the job continue after an error, so that the `Error` restore state runs; once a job has
+  recorded an error, the restore steps update only `AF/RF State` and the stage, while `Focus Progress (%)` and `Last Focus Data` keep
+  the values LabVIEW leaves (those of the failed step; 0 and empty after a failed start), so that the restore never makes a failed job report 100 (D1);
+  guard restores against values that were never read; validate parameters at the start command without changing the ACK by default
+  (D5, D8); enforce one job at a time, by default by replacing the running job (D4); serialise GCS traffic with the Z loop through a
+  shared lock.
 - **Worker-thread variant** (§9.6): acceptable if the camera loop must stay responsive during long settles. It needs a per-camera lock
   around grabs and a cancellation event.
 
@@ -1069,7 +1074,8 @@ RF_SCALE = 0.5                # Refocus: fixed subsampling factor
 
 
 class LVError(Exception):
-    """LabVIEW-style error (status=True, code, source). See 09-configuration-logging-errors.md."""
+    """Local stand-in for errors.AloxError (09-configuration-logging-errors.md section 10.2).
+    FocusError (07's FocusMetricError) and StageError are subclasses, so these except clauses catch them."""
     def __init__(self, code: int, source: str):
         super().__init__(f"{code}: {source}")
         self.code, self.source = code, source
@@ -1608,6 +1614,7 @@ class FocusFields:                    # focus fields of the camera session (one 
 class FocusJob:
     kind: str                         # "AF" | "RF"
     params: object                    # AFParams | RFParams
+    failed: bool = False              # an error was recorded: progress and data stay frozen (D1)
 
 
 class FocusController:
@@ -1628,19 +1635,23 @@ class FocusController:
             return self.af.step(state, params, zs.speed, error_in)
         return self.rf.step(state, params, ZLimits(zs.speed, zs.min_pos, zs.max_pos), error_in)
 
-    def _store(self, kind: str, params, r: StepResult) -> None:
+    def _store(self, kind: str, params, r: StepResult, failed: bool = False) -> None:
         f = self._fields(params.camera_type)
         if kind == "AF":
             f.af_state = r.state
         else:
             f.rf_state = r.state
-        f.last_focus_data, f.focus_progress = r.data, r.progress
+        if not failed:
+            # After a recorded error the restore steps (progress 100) must not reach the client:
+            # it keeps the values LabVIEW leaves (failed step's values; 0 and empty after a failed start).
+            f.last_focus_data, f.focus_progress = r.data, r.progress
         if r.error is not None:
             f.last_error = r.error
 
     def start(self, kind: str, params, error_in=None) -> Optional[LVError]:
         """'Cam Autofocus' / 'Cam Refocus': first step done synchronously, result = ACK error.
-        The caller applies the D4 policy first (reject while self.job is set, or abort() it)."""
+        The caller applies the D4 policy first (default: abort() the running job and replace it;
+        reject only with focus_reject_concurrent_start = TRUE) and the D5/D8 checks."""
         with self.lock:
             r = self._run(kind, AFState.START if kind == "AF" else RFState.START, params, error_in)
             if r.error is None:
@@ -1654,7 +1665,8 @@ class FocusController:
                     f.rf_state = RFState.ERROR
                 f.last_focus_data, f.focus_progress, f.last_error = np.empty((0, 0)), 0.0, r.error
                 # DEVIATION: LabVIEW never runs the restore state after a failed first step.
-                self.job = FocusJob(kind, params) if error_in is None else None
+                # failed=True: the restore steps keep progress 0 and the empty data.
+                self.job = FocusJob(kind, params, failed=True) if error_in is None else None
             return r.error
 
     def step(self) -> None:
@@ -1666,18 +1678,23 @@ class FocusController:
             f = self._fields(job.params.camera_type)
             state = f.af_state if job.kind == "AF" else f.rf_state
             r = self._run(job.kind, state, job.params)
-            self._store(job.kind, job.params, r)
+            self._store(job.kind, job.params, r, job.failed)   # the failed step itself is stored, as in LabVIEW
             # DEVIATION: LabVIEW stops re-enqueueing as soon as r.error is set, so the
-            # 'Error' (restore) state never runs. Here the job continues until finished.
+            # 'Error' (restore) state never runs. Here the job continues until finished,
+            # but its later steps only update the state and the stage (job.failed).
+            if r.error is not None:
+                job.failed = True
             if r.finished:
                 self.job = None
 
     def abort(self) -> None:
-        """Cancellation (server exit, new job replacing an old one): run the restore state once."""
+        """Cancellation (server exit, new job replacing an old one): run the restore state once.
+        The aborted job's progress and data are left as they are."""
         with self.lock:
             job = self.job
             if job is None:
                 return
+            job.failed = True
             f = self._fields(job.params.camera_type)
             if job.kind == "AF":
                 f.af_state = AFState.ERROR
@@ -1706,8 +1723,18 @@ Command handlers on top of the controller (pseudo-code, response helpers from [0
 
 ```
 Cam Autofocus / Cam Refocus:
-    params, err = decode(Command Data)                       # validate here (D8); reject while a job runs (D4, ask)
-    err = focus.start("AF" | "RF", params, err)
+    params, err = decode(Command Data) ; run = True
+    if no err and focus.job is set:                          # D4
+        if compat.focus_reject_concurrent_start:             # default FALSE
+            err = 95xx error ; run = False                   # the running job and its fields are left untouched
+        else: focus.abort()                                  # default: replace the running job, ACK as LabVIEW
+    if no err and AF and compat.af_check_z_limits and [Z Min, Z Max] not inside [Min, Max Position]:
+        err = {9405, "Z move out of range"}                  # D5 (default FALSE: no check, as LabVIEW)
+    if no err and params invalid (D8 list):
+        if compat.focus_validate_params: err = 95xx error    # default FALSE
+        else:                                                # success ACK as LabVIEW, but no motion
+            log warning ; fields[cam] := {state Finished, progress 0, data empty} ; run = False
+    if run: err = focus.start("AF" | "RF", params, err)      # err set above: state Error, progress 0, no data, no job
     err = append_source(err, "Cam Autofocus" | "Cam Refocus") ; log(extra = "Autofocus" | "Refocus", err)
     respond_error_cluster(err)
 Cam Get Autofocus Data:     respond_dbl_2d(fields[cam].last_focus_data, error = decode error)
@@ -1735,10 +1762,11 @@ If long settles, for example a large `Wait (ms)`, must not block the camera loop
 | AF Slow point set | `Z Min = 1.0`, `Step = 0.1`, `Z Max = 1.5` | rows at 1.0 … 1.4000000000000004 (5 rows); last `MOV` = 1.5000000000000004; progress pattern 0 / value / 0 …; last `Measure` 100.00000000000009, then 100 |
 | AF Fast | `Duration = 1 s`, range 0.5 mm | `VEL` = 0.5 mm/s; rows with increasing interpolated Z; ends after ≥ 1 s; stage at `Z Max`; speed restored |
 | AF Fast timeout | stage never reaches `Z Min` | error 9401 after 30 s |
-| AF Fast duration 0 | `Duration = 0` | `VEL` rejected → `Error` (LabVIEW: job stops; fixed driver: restore runs) |
+| AF Fast duration 0 | `Duration = 0` | LabVIEW: `VEL` rejected → `Error`, job stops. Python (D8): success ACK, no motion, progress 0, warning logged (`focus_validate_params` = FALSE); 95xx error (TRUE) |
+| AF failure mid-scan | grab fails at the 3rd point | restore runs (initial speed, `MOV Init Z`); progress and data stay at the failed step's values, never 100 (D1) |
 | RF nominal | `Steps = 3`, `Step = 0.01`, start 1.25 | 7 positions 1.22 … 1.28; progress 100 from the 7th `Mesure Position` on; best = grid point closest to z0; stage left there; speed restored |
 | RF clamping | start near `Max Position` | duplicated clamped positions |
-| RF joystick | `JON? 1` = 1 | 9031, state `Error`, no `MOV`/`VEL` from the restore (guard) |
+| RF joystick | `JON? 1` = 1 | 9031, state `Error`, no `MOV`/`VEL` from the restore (guard); progress stays 0, data empty (D1) |
 | RF per-move timeout | stage stalls | 9401 after 5 s |
 | RF ROI | High Mag 2448×2048, `FinW = 101`, `FinH = 103` | `[1174, 972, 1274, 1076]`; Low Mag `[FinW, FinH, W, H]` |
 | Data padding | mid-scan read | rows `[Z_i, 0]` for unmeasured positions |
@@ -1751,23 +1779,23 @@ If long settles, for example a large `Wait (ms)`, must not block the camera loop
 
 | # | Observation | Evidence | Impact | Recommendation |
 |---|---|---|---|---|
-| D1 | After an error in a background step the job stops without running the `Error` state. Speed and position are not restored, the progress freezes below 100 and the state stays `Error`. | [main VI frames d205, d210] + [Doc6 p.609, p.1033] | stage left at the fast-scan speed or at an arbitrary Z; a client waiting for 100 % waits forever | **Fix**: keep stepping until `finished` (§9.5). Ask whether moving back to `Init Z` after a failure is wanted. |
-| D2 | The client cannot see the state or the error of a running job. Progress returns to 0 between Slow-AF points, exceeds 100 on the last autofocus point (both modes), and reaches 100 in refocus at the last measurement, before the move to best focus. | §2.7 | completion and failure detection are unreliable | **Reproduce** the progress values (protocol compatibility); **ask** about adding a status command (the new `last_error` field can feed it). |
+| D1 | After an error in a background step the job stops without running the `Error` state. Speed and position are not restored, the progress freezes below 100 and the state stays `Error`. | [main VI frames d205, d210] + [Doc6 p.609, p.1033] | stage left at the fast-scan speed or at an arbitrary Z; a client waiting for 100 % waits forever | **Fix**: keep stepping until `finished` (§9.5), so that the restore runs. The `Error` state writes `Progress = 100` (§2.7, §4.5, §5.5), so a client polling for 100 would take the failed job for a success. Rule: once a job has recorded an error (in a background step, or at the start, where `start()` keeps the job as a `DEVIATION`), the restore steps update only `AF/RF State` and the stage. `Focus Progress (%)` and `Last Focus Data` keep the values LabVIEW leaves (those of the failed step; 0 and empty after a failed start), and the client times out as today (`job.failed` in §9.5). Ask whether moving back to `Init Z` after a failure is wanted (questionnaire Q39). |
+| D2 | The client cannot see the state or the error of a running job. Progress returns to 0 between Slow-AF points, exceeds 100 on the last autofocus point (both modes), and reaches 100 in refocus at the last measurement, before the move to best focus. | §2.7 | completion and failure detection are unreliable | **Reproduce** the progress values (protocol compatibility); **ask** about adding a status command (the new `last_error` field can feed it; questionnaire Q39). |
 | D3 | Self-re-enqueue with a blocking `Enqueue` into the loop's own 5-slot queue. | [main VI frames d181, d205] | possible deadlock of the camera loop | **Fix**: step from the loop (§9.5). Questionnaire Q28. |
-| D4 | Nothing prevents a second focus job: AF+AF (double stepping), AF on both cameras (shared internal memory), AF+RF (two jobs moving one stage). | §3.4 | corrupted data, erratic stage motion | **Fix**: one job at a time. **Ask**: reject the new start with an error, or abort and replace the old job. |
-| D5 | Autofocus does not check `[Z Min, Z Max]` against `Min/Max Position` (comment "TODO"), and the Slow scan ends one step beyond the last point. | [Doc6 p.606, p.605] | the stage can leave the software limits | **Fix**: reject out-of-range requests (for example with 9405 "Z move out of range" as in [08-z-stage.md](08-z-stage.md)). **Ask** whether the final over-travel `MOV` must be kept (questionnaire Q22). |
+| D4 | Nothing prevents a second focus job: AF+AF (double stepping), AF on both cameras (shared internal memory), AF+RF (two jobs moving one stage). | §3.4 | corrupted data, erratic stage motion | **Fix**: one job at a time. By default **replace**: abort the old job (its restore state runs once, its progress and data stay as they are), then run the new start and ACK it as LabVIEW does. Rejecting the new start with an error (a 95xx code, [09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.5) would turn a success ACK into an error ACK, which is silence while `send_error_replies` = FALSE. It is therefore the compatibility switch `focus_reject_concurrent_start` (default FALSE; [10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q39). |
+| D5 | Autofocus does not check `[Z Min, Z Max]` against `Min/Max Position` (comment "TODO"), and the Slow scan ends one step beyond the last point. | [Doc6 p.606, p.605] | the stage can leave the software limits | **Switch**: rejecting the start changes its ACK, so the check is the compatibility switch `af_check_z_limits` (default FALSE = LabVIEW, no check; TRUE = reject the start with 9405 "Z move out of range" as in [08-z-stage.md](08-z-stage.md); [10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q39). **Ask** whether the final over-travel `MOV` must be kept (questionnaire Q22). |
 | D6 | No timeout in AF Slow `Goto Z Pos` or AF Fast `Wait Started`. A refused `MOV` is not detected (no `ERR?`). | [Doc6 p.608], [Doc6 p.878] | infinite job | **Fix**: add timeouts (for example 30 s, as in Fast `Goto Z Pos`) with error 9401 (questionnaire Q22). |
 | D7 | `Acquisition Timeout (ms)` is ignored by both commands, and `Refocus Method` is ignored (constant `Fin`). | [Doc6 p.600, p.613, p.1035] | client parameters have no effect | **Reproduce**: accept and ignore. Document it (questionnaire Q19 for `Oxyd`). |
-| D8 | No parameter validation: `Step ≤ 0` (Slow) loops forever; `Duration = 0` → `VEL` Inf/NaN; `Subsampling = 0` → metric failure; `Steps < 0` → no positions, then `MOV 0.0 mm` (out-of-range index default) and progress 0/0; `Step ≤ 1 µm` → no waiting for moves; Fast with `Z Max = Z Min` → `VEL 0` and possibly an endless `Wait Started` (§7.3). | §4.5, §5.5, §6.2, §7.3 | hangs, stage sent to 0 mm | **Fix**: validate at the start command and answer an error (code to choose; ask whether the client relies on the LabVIEW behaviour). |
+| D8 | No parameter validation: `Step ≤ 0` (Slow) loops forever; `Duration = 0` → `VEL` Inf/NaN; `Subsampling = 0` → metric failure; `Steps < 0` → no positions, then `MOV 0.0 mm` (out-of-range index default) and progress 0/0; `Step ≤ 1 µm` → no waiting for moves; Fast with `Z Max = Z Min` → `VEL 0` and possibly an endless `Wait Started` (§7.3). | §4.5, §5.5, §6.2, §7.3 | hangs, stage sent to 0 mm | **Fix**: validate at the start command. Invalid: `Step ≤ 0` (Slow AF), `Duration = 0` (Fast AF), `Subsampling = 0` (AF), `Steps < 0` (refocus). With the compatibility switch `focus_validate_params` = FALSE (default), reply exactly as LabVIEW (success ACK) but never move the stage: end the job without motion, leave the progress at 0 (data empty) and log a warning. The client sees a job that never completes, as it does today in most of these cases. TRUE replies with an error (a 95xx code, [09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.5) ([10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q39). |
 | D9 | `Init Speed` = 0 when `VEL?` fails (AF), and the end sends `VEL 0`. | [Doc6 p.607] | stage left at a bad speed | **Fix**: skip the restore (sketch). |
 | D10 | Refocus overwrites `error.source` with the decimal text of `U32(t0 − now)` at **every** measurement, even without an error. The operands are reversed (values near 2³²) and the second `Tick Count` is not sequenced (§5.5). | [Doc6 p.1035] | the real error source (IMAQdx, PNG write) is lost; debugging leftover | **Fix**: do not reproduce; log the measurement duration separately. Ask only if a client parses `source`. |
 | D11 | Joystick active → `Error` with an empty session. If executed, the `Error` state would send `VEL 0` and `MOV 0.0 mm`. Latent today because of D1. | [Doc6 p.1034, p.1033] | dangerous move once D1 is fixed | **Fix**: restore only values that were actually read (sketch). Questionnaire Q20. |
 | D12 | Low Mag "Fin" ROI is `[FinW, FinH, W, H]`, not centred, unlike High Mag. | [Doc6 p.1035] | different ROI semantics per camera | **Ask** (intended margins or bug, questionnaire Q21). Reproduce until answered. |
 | D13 | A failed `POS?` reads as 0.0 mm. It can satisfy the "reached" test for a target within 1 µm of 0, and in Fast AF `Wait Started` it looks like "left `Z Min`" (unless `Z Min` ≈ 0), which starts the timed measurement early. | §1.3, [Doc6 p.607, p.1035] | false "reached" | **Fix**: treat a failed `POS?` as "not reached" (timeouts still apply). |
-| D14 | The camera simulation mode is ignored (constant `False` selector). | [Doc6 p.605, p.1035] | cannot run a focus without hardware | **Fix**: use the simulator when the session is simulated (useful for tests). Ask if the LabVIEW behaviour must be kept. |
+| D14 | The camera simulation mode is ignored (constant `False` selector). | [Doc6 p.605, p.1035] | cannot run a focus without hardware | **Fix**: use the simulator when the session is simulated (useful for tests). Ask if the LabVIEW behaviour must be kept (questionnaire Q40). |
 | D15 | Measurement errors still append a row with score 0 (AF and RF), and the RF index still advances. | §4.5, §5.5 | zero rows in the data after a failure | **Reproduce** (visible in `Last Focus Data`). |
 | D16 | Fast-AF Z is estimated from a software timestamp taken after `Get Image2` returns. `T0` is taken when the stage is first seen > 1 µm from `Z Min`. "Next" may return frames exposed earlier. Acceleration is ignored. | [Doc6 p.606, p.608] | systematic Z bias of the Fast curve | **Reproduce** the formula. **Ask** whether hardware timestamps (GenICam chunk data) or synchronous `POS?` reads are acceptable improvements. |
-| D17 | Image name: double underscore, space-padded index (inferred), 1 s resolution, `Timestamp` input ignored, folder not created, NI-specific metadata. | §8 | file-name compatibility | **Reproduce** the name (after confirming the padding). **Ask** about the NI Vision Info metadata (questionnaire Q26). |
+| D17 | Image name: double underscore, space-padded index (inferred), 1 s resolution, `Timestamp` input ignored, folder not created, NI-specific metadata. | §8 | file-name compatibility | **Reproduce** the name (after confirming the padding). **Ask** about the NI Vision Info metadata (questionnaire Q26, Q38). |
 | D18 | Sigma method: the low-pass filter modifies the camera image in place (displayed and saved filtered) with an even 20×20 kernel and no error wiring. FULL: Sobel and FFT run in parallel on shared NI work images, and the FFT uses the whole image. | [Doc6 p.1036], [07-focus-metrics.md](07-focus-metrics.md) | non-deterministic FULL scores; filtered saved images | **Fix** the race (sequential, separate buffers). Keep the formulas as specified in 07. Ask whether saved Sigma images should be unfiltered (questionnaire Q27). |
 | D19 | Every `Cam Autofocus Run` step is written to `Commands History` (500 entries). Every step also grows the unbounded error and temperature histories of the camera loop. | [main VI frame d205], [01-architecture.md](01-architecture.md) | history flooded, memory growth | **Fix**: do not record internal steps. |
 | D20 | Focus GCS traffic runs in parallel with the Z loop without a lock. The `Z Session` comes from a front-panel local variable that can be stale or default. | §7.4 | interleaved serial exchanges, wrong axis/system | **Fix**: one shared, locked Z link object; use its live session. |
@@ -1784,21 +1812,22 @@ If long settles, for example a large `Wait (ms)`, must not block the camera loop
 1. **Wire layout of the start commands.** What are the numeric values of `Autofocus Speed`, `Autofocus Method` (7 values) and
    `Refocus Method`, and the internal field order of `Camera Autofocus Data` / `Camera Refocus Data` (integer widths of `Duration (s)`,
    `ROI`, `Steps`, `Wait (ms)`)? Without them the TCP decoder cannot be written. Needs the `.ctl` files or a network capture (see
-   [04-data-types.md](04-data-types.md); questionnaire Q2, and Q7 of [03-command-reference.md](03-command-reference.md)).
+   [04-data-types.md](04-data-types.md); questionnaire Q2, Q33, and Q7 of [03-command-reference.md](03-command-reference.md)).
 2. **Client completion logic.** How does the existing client decide that a focus run is over or has failed: `progress == 100`,
    `>= 100`, a timeout? Does it rely on the oscillating Slow-AF progress or on refocus reporting 100 early (D2)? Is a new status/abort
-   command acceptable? Where is the best Z chosen after an autofocus (questionnaire Q22)?
+   command acceptable? Where is the best Z chosen after an autofocus (questionnaire Q22, Q39, Q32; Q31 asks for the client code)?
 3. **Failure policy.** After a failure in a background step, should the server restore speed and **move back to `Init Z`** (the
-   intent of the `Error` state, D1)? Or should it only stop, as the LabVIEW program effectively does?
+   intent of the `Error` state, D1)? Or should it only stop, as the LabVIEW program effectively does (questionnaire Q39)?
 4. **ACK of a failed start.** Does the client receive an error response when `Cam Autofocus` / `Cam Refocus` fails, or nothing (see
    [02-tcp-protocol.md](02-tcp-protocol.md))? This decides what the re-implementation must send (questionnaire Q17).
-5. **Concurrent starts.** For a start command received while a job runs: reject, replace, or (LabVIEW) silently mix (D4)?
+5. **Concurrent starts.** For a start command received while a job runs: reject, replace, or (LabVIEW) silently mix (D4,
+   questionnaire Q39)?
 6. **Low Mag refocus ROI.** Is `[FinW, FinH, W, H]` intended (D12, questionnaire Q21)?
 7. **Slow-AF end position.** Does any client rely on the stage ending one step beyond the last point (D5, questionnaire Q22)?
 8. **`POS?` semantics on the Mercury controller.** Actual or target position? If it is the target position, the settle logic is
-   meaningless and must be redesigned (§6.2).
+   meaningless and must be redesigned (§6.2, questionnaire Q35).
 9. **Refocus image files.** Index padding (space or zero), whether downstream tools parse the names, and whether the NI "Vision Info"
-   PNG metadata must be preserved (D17, questionnaire Q26).
+   PNG metadata must be preserved (D17, questionnaire Q26, Q38).
 10. **`Oxyd` refocus.** Is it needed? Its sub-VIs ("OXYD ROI", "FFT OXYD", "SOBEL OXYD") are not in the printouts, so it cannot be
     specified from the evidence (questionnaire Q19).
-11. **Simulation.** Should autofocus/refocus work with a simulated camera in the new server (D14)?
+11. **Simulation.** Should autofocus/refocus work with a simulated camera in the new server (D14, questionnaire Q40)?

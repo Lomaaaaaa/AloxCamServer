@@ -555,7 +555,7 @@ Re-implementation: answer `Get Heartbeat` from the camera worker, as LabVIEW doe
 
 ## 10. Notifier-name correlation and the client's synchronous-call pattern
 
-The client is not in the printouts. The pattern below is **(inferred)** from the field names (`Notifier Name`, `Wait for <type> Notifier Data`), from the folder that holds the reply typedefs (`D:\ALOX\Vision Core\sources\synchronous calls\` [Doc6 p.439]) and from LabVIEW conventions:
+The client is not in the printouts (questionnaire Q31). The pattern below is **(inferred)** from the field names (`Notifier Name`, `Wait for <type> Notifier Data`), from the folder that holds the reply typedefs (`D:\ALOX\Vision Core\sources\synchronous calls\` [Doc6 p.439]) and from LabVIEW conventions:
 
 ```
 client caller                    client TCP reader                    server
@@ -581,7 +581,7 @@ Rules the server must follow for an unchanged client:
    - unknown commands;
    - the camera and Z `Default` cases;
    - `Exit`, `Cam Get Image`, `Cam Get Images Array`, `Cam Autofocus Run`, `Cam Refocus Run`;
-   - error acknowledgements (§8.4).
+   - error acknowledgements, probably (§8.4; confirm by capture C6).
 
    The client times out in these cases. Whether it expects a reply to these commands is **(unknown)**.
 
@@ -944,7 +944,7 @@ class TcpFrontEnd:
                 return
             writer.write(frame)
             try:
-                await asyncio.wait_for(writer.drain(), 1.0)   # LabVIEW TCP Write timeout 1000 ms
+                await asyncio.wait_for(writer.drain(), 1.0)   # LabVIEW: 1000 ms. D12 recommends a longer, size-based timeout for image replies (01 §10.3 uses 5 s).
             except (asyncio.TimeoutError, ConnectionError) as exc:
                 log.error("send failed (%s): closing the connection", exc)
                 writer.close()
@@ -973,17 +973,17 @@ class TcpFrontEnd:
                 writer.close()
 ```
 
-`route` must not block for long, because LabVIEW's routing `Enqueue` blocks while the consumer queue is full. The camera and Z workers call `send_response` themselves. For an image reply, the worker fills `ts[0..4]` (§8.2) before calling it. The sketch does not implement the fix for D10 (§13): to drop replies that belong to an earlier connection, tag each routed message with a connection counter and have `send_response` discard replies whose counter differs from the current one.
+`route` must not block for long, because LabVIEW's routing `Enqueue` blocks while the consumer queue is full. The camera and Z workers are threads ([01-architecture.md](01-architecture.md) §10.2). They send a reply with `asyncio.run_coroutine_threadsafe(front.send_response(...), loop).result()`, as described in the 01 §10.3 notes. A single-writer variant, where replies go through an unbounded queue to the TCP task and only that task writes, is equally acceptable ([10-migration-plan.md](10-migration-plan.md) §3.3). Both keep frames from interleaving. For an image reply, the worker fills `ts[0..4]` (§8.2) before calling `send_response`. The sketch does not implement the fix for D10 (§13): to drop replies that belong to an earlier connection, tag each routed message with a connection counter and have `send_response` discard replies whose counter differs from the current one.
 
 ### 11.3 Compatibility switches
 
-The first two switches are the project-wide ones of [10-migration-plan.md](10-migration-plan.md) §6. Following its rule, a behaviour the client can observe keeps the LabVIEW default until the owner or a capture confirms the client does not depend on it.
+This table lists the switches owned by the protocol layer. The complete registry of `[compat]` switches is in [10-migration-plan.md](10-migration-plan.md) §6. They live in the new Python-only settings file, not in `alox.ini` ([09-configuration-logging-errors.md](09-configuration-logging-errors.md) §12 item 2; questionnaire Q36). The first two switches are the project-wide ones of [10-migration-plan.md](10-migration-plan.md) §6. Following its rule, a behaviour the client can observe keeps the LabVIEW default until the owner or a capture confirms the client does not depend on it.
 
 | Switch | LabVIEW behaviour | Initial default | Recommended once confirmed |
 |---|---|---|---|
-| `send_error_replies` | Error-cluster replies with `status = TRUE` are not sent (§8.4) | FALSE (LabVIEW) | TRUE: always reply (questionnaire Q17, capture C6) |
+| `send_error_replies` | Error-cluster replies with `status = TRUE` are probably not sent (§8.4; inferred from [Doc6 p.437], to be confirmed by capture C6) | FALSE (LabVIEW) | TRUE: always reply (questionnaire Q17, capture C6) |
 | `reply_unknown_commands` | Unknown or unrouted commands: no reply | FALSE (LabVIEW) | TRUE: reply with an error cluster if the client accepts one for that command; otherwise log only |
-| `listen_address` | `127.0.0.1` | `127.0.0.1` | `127.0.0.1` (changing it exposes an unauthenticated control port) |
+| `listen_address` | `127.0.0.1` | `127.0.0.1` | `127.0.0.1` (changing it exposes an unauthenticated control port; questionnaire Q36) |
 | `inbound_pause_ms` | ≈ 50 ms pause after each inbound frame (§4.6) | 0 (not observable by a sane client, D8) | 0 |
 | `close_on_extra_heartbeat_data` | a heartbeat with a payload closes the connection | TRUE | TRUE (harmless) |
 | `datatype_codes`, `command_codes`, `enum_size` | fixed by the `.ctl` files (unknown) | loaded from configuration, filled from a capture | — |
@@ -1030,7 +1030,7 @@ A Wireshark capture of the real client talking to the current LabVIEW server (qu
 | D13 | A `Heartbeat` frame with a payload closes the connection (error −1 "Extra Data Found"); if the announced payload is incomplete, the loop blocks for up to 25 s first and then keeps the connection (§5.3) | surprising; a stalled loop | **reproduce** the close (or ignore the payload); **fix** the 25 s stall |
 | D14 | `Send Heartbeat` and `Quit` states are dead code | none | do not reproduce |
 | D15 | A queue reference leaks per reply (`Obtain Queue` without `Release Queue`) | memory growth in LabVIEW | do not reproduce |
-| D16 | The listener is bound to `localhost` and accepts no second client while one is served (backlog only) | remote clients impossible; a second local client hangs | **reproduce** (security), document |
+| D16 | The listener is bound to `localhost` and accepts no second client while one is served (backlog only) | remote clients impossible; a second local client hangs | **reproduce** (security), document (questionnaire Q36) |
 | D17 | A `Listen` failure other than a timeout (port taken by another program) is retried at once, forever, with no log **(inferred)** (§3) | busy loop; the server looks alive but never accepts | **fix**: fail at start-up (or retry with a delay) and log the error |
 
 ---
@@ -1044,5 +1044,5 @@ Only the items that change the re-implementation are listed. The questionnaire n
 3. **Variant layout**: confirm §7.3 and collect one header template per command (Q4, C3–C5).
 4. **Error acknowledgements and unknown commands**: are error acknowledgements sent today, and does the client rely on timing out (Q17, C6)? The answer sets `send_error_replies` and `reply_unknown_commands`.
 5. **Image format**: will the NI Vision Runtime remain available, so that `IMAQ Flatten Image to String` can be reproduced byte for byte, or must the client change (Q5, Q6, C8)?
-6. **Client heartbeat**: does the client send `Heartbeat` frames, and does it expect any from the server (C7)?
-7. **Client timeouts and pipelining**: per-command timeouts, and whether several requests are outstanding at once (C10, C11). This sets how strictly the reply latency of the LabVIEW loop must be respected.
+6. **Client heartbeat**: does the client send `Heartbeat` frames, and does it expect any from the server (questionnaire Q4, capture C7)?
+7. **Client timeouts and pipelining**: per-command timeouts, and whether several requests are outstanding at once (questionnaire Q32, Q31; captures C10, C11). This sets how strictly the reply latency of the LabVIEW loop must be respected.

@@ -421,7 +421,7 @@ score := measure_focus_sobel(img, Fin ROI, 0.5, Method = Sigma, FULL = False)
 - LowPass errors are lost. Because `error in` is not wired either, the filter also runs after an upstream error (the metric
   VI then returns 0 anyway). If NI rejects the 20×20 size, the image stays unchanged and the score is the Sigma edge score of
   the unfiltered image **(inferred)**. Whether LabVIEW's automatic error handling then opens a dialog is **(unknown)**: it
-  depends on an execution property of the refocus VI (Q30 asks the same for the main VI).
+  depends on an execution property of the refocus VI (questionnaire Q41 asks it for the refocus VI).
 
 ### 7.2 `IMAQ LowPass` [Doc6 p.961–962]
 
@@ -504,10 +504,11 @@ ties, which are rare with float scores.
 4. One entry point, `measure(img, method, roi, scale)`, serves both callers and matches the `Metrics` protocol of
    [06-autofocus-refocus.md](06-autofocus-refocus.md) §9.2: the autofocus maps every method other than `FFT` and `Prewitt`
    to `Sobel` before calling it, and the refocus passes `scale = 0.5`.
-5. Errors raise `FocusMetricError`; in the implementation this is `FocusError` of
-   [09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.2, with the code proposed there (§10.5), because
-   NI's error codes for these failures are **(unknown)**. `measure_lv_style` shows the LabVIEW contract `(image, 0.0, error)`,
-   which the state machines of 06 reproduce by recording score 0.
+5. Errors raise `FocusMetricError`; in the implementation this is `errors.FocusError`, a subclass of `AloxError`
+   ([09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.2), with the code proposed there (§10.5),
+   because NI's error codes for these failures are **(unknown)**. The 06 sketches catch `AloxError` (their local name
+   `LVError`). `measure_lv_style` shows the LabVIEW contract `(image, 0.0, error)`, which the state machines of 06 reproduce
+   by recording score 0.
 6. Deliberate deviations from LabVIEW, all listed in §11: FULL is computed sequentially (F4), and an FFT error in the refocus
    FULL composition is propagated instead of giving a silent 0 (F6).
 7. `Timer (ms)` is not implemented. Callers time the call themselves if they need to.
@@ -539,7 +540,8 @@ BORDERS = ("edge", "reflect", "constant")      # numpy pad modes; NI's actual fi
 
 class FocusMetricError(Exception):
     """An NI Vision call inside a metric VI failed: LabVIEW then returns score 0.
-    In the implementation this is FocusError (09); the 06 sketches catch it as LVError."""
+    In the implementation this is errors.FocusError, a subclass of AloxError
+    (09-configuration-logging-errors.md §10.2). The 06 sketches catch AloxError (their local name LVError)."""
     image: Optional[np.ndarray] = None   # image the caller keeps (Sigma: already filtered)
 
 
@@ -839,8 +841,9 @@ needed.
 
 Only questions that change the implementation or its acceptance:
 
-1. **Required fidelity.** Must scores match LabVIEW numerically (clients that threshold them, comparisons with historical
-   data), or is the same curve shape and argmax enough? The answer decides whether Tier A of §10 is mandatory.
+1. **Required fidelity (questionnaire Q39).** Must scores match LabVIEW numerically (clients that threshold them,
+   comparisons with historical data), or is the same curve shape and argmax enough? The answer decides whether Tier A of §10
+   is mandatory.
 2. **LabVIEW 2018 + Vision machine (Q29).** It is needed for Tier A (resampling phase, border, FFT scaling, Sigma and LowPass
    formulas). Without it only B3 is possible, and LowPass stays a hypothesis.
 3. **NI Vision Runtime allowed on the new server (Q6)?** If yes, calling NI Vision's C library through `ctypes` for
@@ -849,9 +852,9 @@ Only questions that change the implementation or its acceptance:
    no, the NumPy implementation of §9 is the only route.
 4. **Camera pixel format (Q7).** U8 or U16? It determines saturation levels, histogram behaviour and whether F15 applies.
 5. **`FULL` default (Q30).** It decides what autofocus "Prewitt" computes (F14).
-6. **FULL semantics (F4, F5).** Should FULL keep the whole-image FFT factor and the product form, and must old FULL values stay
-   comparable?
-7. **"Sigma" method (F8–F10).** Is it used in production? Should the saved and displayed images stay filtered? Is a
-   brightness-like score acceptable, or should Sigma be redefined?
+6. **FULL semantics (F4, F5; questionnaire Q39, Q27).** Should FULL keep the whole-image FFT factor and the product form,
+   and must old FULL values stay comparable?
+7. **"Sigma" method (F8–F10; questionnaire Q39, Q27).** Is it used in production? Should the saved and displayed images
+   stay filtered? Is a brightness-like score acceptable, or should Sigma be redefined?
 8. **Out-of-image ROI policy (F12).** If NI clips, reproduce the clipping. If NI fails, should the new server fail too or clip?
    This interacts with the uncentred Low Mag refocus ROI (Q21).

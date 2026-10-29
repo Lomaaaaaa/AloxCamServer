@@ -146,7 +146,7 @@ The TCP loop decodes a `Command` frame with `Unflatten From String(Camera Queue 
 A LabVIEW case label `"A".."B"` is an **inclusive range of numeric enum values**, not a list of names. Routing therefore depends on the
 numeric order of the enum items. LabVIEW refuses a value that belongs to two cases, so the two ranges are disjoint **(inferred, LabVIEW
 semantics)**. Both `Enqueue` calls wait forever: while the target queue holds 5 elements the TCP loop blocks, and so do reading and all
-replies ([01-architecture.md](01-architecture.md) §4.5).
+replies ([01-architecture.md](01-architecture.md) §4.4).
 
 ### 3.2 Why the item order matters
 
@@ -313,18 +313,20 @@ and the source suffix.
 from dataclasses import dataclass, replace
 from typing import Callable
 
+# Local stand-in for errors.ErrorCluster ([09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.2).
 @dataclass(frozen=True)
-class LVError:
+class ErrorCluster:
     status: bool = False
     code: int = 0
     source: str = ""
 
-def decorate(err: LVError, suffix: str) -> LVError:
+def decorate(err: ErrorCluster, suffix: str) -> ErrorCluster:
     """Append suffix only when status is TRUE (warnings are left untouched); no separator."""
     return replace(err, source=err.source + suffix) if err.status else err
 
-def finish(variant: str, err: LVError, suffix: str, extra: str,
-           log: Callable[[str, LVError], None], reply: Callable[[LVError], LVError]) -> LVError:
+def finish(variant: str, err: ErrorCluster, suffix: str, extra: str,
+           log: Callable[[str, ErrorCluster], None],
+           reply: Callable[[ErrorCluster], ErrorCluster]) -> ErrorCluster:
     """reply(e) queues the reply and returns the reply VI's error out:
     the ACK VI returns e itself; typed reply VIs return only their queue error (normally no error)."""
     if variant == "A":                  # decorated error is both replied and logged
@@ -689,7 +691,8 @@ start fail with `{TRUE, 9031, "'refocus' warning (joystick enabled)"}` [Doc6 p.1
 - **Side effect:** each call may **start the controller macro `DH`**, whose content is **(unknown)** ([open-questions.md](open-questions.md)
   Q10).
 - **Reply:** BOOL = `ok` (TRUE = no controller error), with the error of the whole `ERR?` → `RMC?` → `MAC START` chain. Label
-  `"Get Status"`. Reading `ERR?` clears the controller's error register **(inferred, GCS semantics)**.
+  `"Get Status"`. Reading `ERR?` clears the controller's error register. PI: "call ERR?.vi to reset error after STP" [Doc6 p.1208];
+  the interface open sends `ERR?` to clear the error status [Doc6 p.517].
 
 ### 7.5 `Z Get Error` [main VI frame d225; p.6]
 
@@ -758,8 +761,9 @@ start fail with `{TRUE, 9031, "'refocus' warning (joystick enabled)"}` [Doc6 p.1
 - **Behaviour:** reference check as in §7.11 (info text `"Move Relative: Z Reference resetted"`); `POS?` → `cur` (0.0 if it failed);
   `target ← cur + Move`; the range check is on `target`. In range: `MVR(S, A, [Move])`, and on success `Z Pos (mm)` ← `target`. Out of
   range: 9405 as above, which also replaces a `POS?` error. No wait.
-- **Note:** the check uses the measured position, while `MVR` moves from the last commanded target, so the two differ while a previous
-  move is still running.
+- **Note:** the check uses the measured `POS?`. If `MVR` adds the distance to the last commanded target, as GCS 2.0 controllers
+  commonly do **(inferred)**, the two differ while a previous move is still running. The Mercury behaviour is **(unknown)**:
+  [08-z-stage.md](08-z-stage.md) Z5 and §15 item 9; questionnaire Q35.
 - **Reply:** ACK. Label `"Move Relative"`.
 
 ### 7.13 `Z Wait End Move` [main VI frame d240; p.12]
@@ -847,9 +851,9 @@ Command-level items only. Subsystem defects are listed in [05-camera-acquisition
 | # | Behaviour | Evidence | Impact | Recommendation |
 |---|---|---|---|---|
 | C1 | Routing by enum range: any misplaced item is never executed; `Exit` outside the camera range would make the server unstoppable. | [main VI frames d0, d66] | silent loss of commands | **Reproduce** the routing outcome: evaluate the ranges once on the real item list into explicit name/code sets (§3.5, [04](04-data-types.md) T2), and self-check at start-up that every client command reaches a loop with a case for it. |
-| C2 | Unknown values, `Default` cases, `Cam Get Image`, `Cam Get Images Array` and `Exit` produce no reply. | [main VI frames d65, d73, d98, d169, d78, d220] | client timeouts | **Reproduce** on the wire, log a warning. **Ask** whether replies may be added (questionnaire Q1). |
-| C3 | ACK replies carrying an error are probably never sent (`Z Move …` 9405, `Cam Setup` failures, `Z Cleanup`…). | [Doc6 p.437] | failures look like timeouts | **Ask** (capture first); default **fix** with a compatibility switch ([02-tcp-protocol.md](02-tcp-protocol.md) §8.4). |
-| C4 | Unwired VTD errors: wrong payload types run with the defaults (HM camera, speed 0, FNL, …). Wired cases sometimes still act (`Cam Flip`, `Z Set Min/Max Limit` write defaults). | §4.1, §7 | wrong camera or axis action, silently | **Fix**: reject undecodable payloads with an error reply. |
+| C2 | Unknown values, `Default` cases, `Cam Get Image`, `Cam Get Images Array` and `Exit` produce no reply. | [main VI frames d65, d73, d98, d169, d78, d220] | client timeouts | Unknown values and the `Default` cases: switch `reply_unknown_commands` (default FALSE = no reply; [02-tcp-protocol.md](02-tcp-protocol.md) §11.3). `Cam Get Image`, `Cam Get Images Array`, `Exit`: **reproduce** (no reply); **ask** whether replies may be added (questionnaire Q1, Q32). |
+| C3 | ACK replies carrying an error are probably never sent (`Z Move …` 9405, `Cam Setup` failures, `Z Cleanup`…). | [Doc6 p.437] | failures look like timeouts | **Ask** (capture first). Default: **reproduce**, i.e. switch `send_error_replies` = FALSE. The recommended fix (TRUE, always reply) is enabled once the capture or the owner confirms the client does not depend on the timeout ([02-tcp-protocol.md](02-tcp-protocol.md) §11.3, [10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q17, Q4). |
+| C4 | Unwired VTD errors: wrong payload types run with the defaults (HM camera, speed 0, FNL, …). Wired cases sometimes still act (`Cam Flip`, `Z Set Min/Max Limit` write defaults). | §4.1, §7 | wrong camera or axis action, silently | **Fix**: reject undecodable payloads with an error reply (reactions to malformed or out-of-contract input are fixed directly; see [10-migration-plan.md](10-migration-plan.md) §6. Any error reply is still subject to `send_error_replies`). |
 | C5 | `Log` stores parameters that nothing uses (TODO). | [main VI frame d76] | none | **Reproduce** (ACK, no effect); real logging is configured by the INI. |
 | C6 | `Show UI` acts on the LabVIEW window. | [main VI frame d74] | none without a GUI | **Reproduce** as an ACK; drive the GUI if one exists. |
 | C7 | Source decoration is inconsistent: appended (most commands), replaced (`Cam Set Exposure`), added after the reply (`Cam Set Led`, `Cam Get Led`, AF read-backs), never (`Cam Software Trigger`). | §4.2 | client-visible `source` strings differ | **Reproduce** if the client parses `source` (ask); otherwise unify. |
@@ -861,7 +865,7 @@ Command-level items only. Subsystem defects are listed in [05-camera-acquisition
 | C13 | `Z Move …` neither waits nor reads `ERR?`; a refused move is reported to a later command. | [main VI frames d232, d236] | error attributed to the wrong command | **Reproduce** the reply; document; **ask** before adding an `ERR?`. |
 | C14 | `Z Set Speed` does not update `Z Stage Settings.Speed`; re-initialisation restores the INI speed. | [main VI frame d226] | speed silently reverts | **Reproduce**. |
 | C15 | `Z Set Min/Max Limit` are not validated or persisted. | [main VI frames d246, d247] | limits lost at restart | **Reproduce** (memory only); reject non-finite values. |
-| C16 | Internal `… Run` commands are enum items that a client may be able to send (position unknown). | §3.2 | stray steps | **Fix**: never route them from TCP. |
+| C16 | Internal `… Run` commands are enum items that a client may be able to send (position unknown). | §3.2 | stray steps | **Fix**: never route them from TCP (reactions to malformed or out-of-contract input are fixed directly; see [10-migration-plan.md](10-migration-plan.md) §6. Any error reply is still subject to `send_error_replies`). |
 | C17 | `Cam Autofocus Run` floods `Commands History`; stream polls and AF/RF steps grow the unbounded error and temperature histories. | [main VI frames d0, d205] | memory growth | **Fix** (01 A11, A13). |
 | C18 | Self re-enqueue (`Cam Stream Next Image`, `… Run`) with an infinite timeout into the camera loop's own 5-element queue. | [main VI frames d106, d107, d181, d205] | possible deadlock | **Fix** (05 §11, 06 §9.5). |
 
@@ -875,9 +879,9 @@ Only items that change the command API. Questionnaire numbers refer to [open-que
 |---|---|---|---|
 | Q1 | Item list, order and representation of `typedef_ext_camera_camera_command.ctl`: are there items beyond the 46 known names? Is `Exit` in `[Get Heartbeat ; Cam Get Led]`? Is `Z Do Reference` the last Z item? Where are `Log`, `Cam Autofocus Run`, `Cam Refocus Run`? | Wire codes and routing (§3.2) | `.ctl` Edit Items, or a capture (questionnaire Q2, Q4) |
 | Q2 | Are error ACKs really suppressed, and does the client rely on the resulting timeouts? | C3; affects every ACK command | capture of an out-of-range `Z Move Absolute` (questionnaire Q17) |
-| Q3 | Does the client send `Cam Get Image`, `Cam Get Images Array` or `Log`, and does it expect no reply? | C2, C5 | client code or capture |
-| Q4 | Does the client parse `error.source` (suffixes, replaced sources)? | C7 | client code |
+| Q3 | Does the client send `Cam Get Image`, `Cam Get Images Array` or `Log`, and does it expect no reply? | C2, C5 | client code or capture (questionnaire Q31/Q32) |
+| Q4 | Does the client parse `error.source` (suffixes, replaced sources)? | C7 | client code (questionnaire Q37) |
 | Q5 | Complete item list of the `Z Do Reference` enum (`FPL`?) and its representation | Payload decoding; any item other than `FRF` runs FNL | `.ctl` or capture (questionnaire Q2) |
-| Q6 | Content of `Command Data` for commands whose data is never read (`Get Heartbeat`, `Exit`, `Z Setup`, `Z Get Status`, `Z Get Error`, `Z Cleanup`, `Cam Get Images Array`) | A strict decoder must accept it (empty variant or something else) | capture |
-| Q7 | Field order of `Camera Init Data`, `Camera Autofocus Data` and `Camera Refocus Data` | Decoding of `Cam Setup`, `Cam Autofocus`, `Cam Refocus` | `.ctl` (questionnaire Q3) or capture |
-| Q8 | Does `Z Setup` reference the axis every time (hidden options of the PI configuration VI)? | Physical motion on each `Z Setup` and each automatic re-initialisation | observation on the machine (questionnaire Q11) |
+| Q6 | Content of `Command Data` for commands whose data is never read (`Get Heartbeat`, `Exit`, `Z Setup`, `Z Get Status`, `Z Get Error`, `Z Cleanup`, `Cam Get Images Array`) | A strict decoder must accept it (empty variant or something else) | questionnaire Q4 (capture) |
+| Q7 | Field order of `Camera Init Data`, `Camera Autofocus Data` and `Camera Refocus Data` | Decoding of `Cam Setup`, `Cam Autofocus`, `Cam Refocus` | `.ctl` (questionnaire Q3 for `Camera Init Data`, Q33 for the AF/RF clusters) or capture |
+| Q8 | Does `Z Setup` reference the axis every time (hidden options of the PI configuration VI)? | Physical motion on each `Z Setup` and each automatic re-initialisation | questionnaire Q11, Q41 (front panel of the PI set-up VI) and Q35 (test on the machine) |

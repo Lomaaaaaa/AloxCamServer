@@ -22,7 +22,7 @@
 | Error cluster `{status: bool, code: I32, source: string}` | It flows through nodes. A node whose `error in.status` is TRUE does nothing and passes the error on. `status=FALSE` with `code≠0` is a warning. An unwired `error out` means the error is silently ignored. | Exceptions carrying `code` and `source`. Ignored errors become explicit `try/except` blocks for the specific codes. |
 | Case structure driven by an error cluster (`Error` / `No Error` frames) | This pattern is used to append text to `source` only when there is an error. Warnings take the `No Error` path. | `if err is not None: err.source += suffix` |
 | `Select` / Case driven directly by an error cluster | Tests `status` only. An error with `status=FALSE` and a non-empty `source` counts as "no error". | Test `err is not None` |
-| `Clear Errors` with a specific code [Doc6 p.57–59] | Clears the error only if its code matches. With code 0 it clears everything. | `except CamError as e: if e.code != CODE: raise` |
+| `Clear Errors` with a specific code [Doc6 p.57–59] | Clears the error only if its code matches. With code 0 it clears everything. | `except CameraError as e: if e.code != CODE: raise` (alias `CamError` in the sketches of §12) |
 | `Merge Errors` | Returns the first error in input order. | First non-`None` error |
 | Uninitialised shift register in a single-iteration loop | This is a static variable private to the VI. It persists between calls. If the VI is non-reentrant (the LabVIEW default), every caller shares it. | An attribute of an explicit object, one instance per camera |
 | IMAQ image | A reference to a named image buffer. A Vision VI with an unwired `Image Dst` writes its result into `Image Src` (in place) (inferred, standard NI convention). | A `numpy.ndarray` held in the session and replaced explicitly |
@@ -210,7 +210,7 @@ any ──Cam Setup──► re-opens WITHOUT closing the previous session
 
 None of these commands checks the current state first. Every call goes straight to the driver, and the driver's error (if any) becomes the reply.
 
-**Error-cluster replies on error.** In `Enqueue Send Error Cluster Reponse.vi` the `error in` wire is flattened into the reply **and**, by a wire running under the `Flatten To String` node, also feeds the `error in` of the `Enqueue Element` that queues the reply [Doc6 p.437]. A LabVIEW queue primitive does nothing when its `error in` has `status = TRUE`, so an error reply is probably never sent: the client only sees its own timeout **(inferred; the wire is partly hidden, confirm with a capture)**. This applies to every "error cluster" reply of §3.6; Boolean, DBL and Image replies carry the error as data and are always sent. The pseudo-code below writes "reply error cluster(err)" for the LabVIEW call; read it with this caveat. The decision (reproduce or always reply) belongs to [02-tcp-protocol.md](02-tcp-protocol.md).
+**Error-cluster replies on error.** In `Enqueue Send Error Cluster Reponse.vi` the `error in` wire is flattened into the reply **and**, by a wire running under the `Flatten To String` node, also feeds the `error in` of the `Enqueue Element` that queues the reply [Doc6 p.437]. A LabVIEW queue primitive does nothing when its `error in` has `status = TRUE`, so an error reply is probably never sent: the client only sees its own timeout **(inferred; the wire is partly hidden, confirm with a capture)**. This applies to every "error cluster" reply of §3.6; Boolean, DBL and Image replies carry the error as data and are always sent. The pseudo-code below writes "reply error cluster(err)" for the LabVIEW call; read it with this caveat. The decision is the project switch `send_error_replies` (default FALSE = LabVIEW; [02-tcp-protocol.md](02-tcp-protocol.md) §11.3, [10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q17).
 
 ### 4.2 `Cam Setup` [main VI frames d79–d89; p.11]
 
@@ -921,7 +921,7 @@ def tick_ms() -> int:
 
 
 class CamError(Exception):
-    """Error with a LabVIEW-compatible code and source text (see chapter 09)."""
+    """Local stand-in for errors.CameraError (subclass of AloxError), [09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.2."""
 
     def __init__(self, code: int, source: str):
         super().__init__(f"{code}: {source}")
@@ -1189,10 +1189,10 @@ class AcqState(str, Enum):
 
 
 class GetImageStateMachine:
-    def __init__(self, faithful_buffer0: bool = False):
+    def __init__(self, request_buffer_zero: bool = True):    # [compat] switch, default = LabVIEW
         self.t0 = 0
         self.t0_buf = -1                       # -1: buffer 0 counts as new (design choice)
-        self.faithful_buffer0 = faithful_buffer0
+        self.request_buffer_zero = request_buffer_zero
 
     def step(self, state, stream, session, settings, error=None):
         """Returns (state_out, error_or_None); mutates `session` (src_image, custom_data, simulation fields)."""
@@ -1244,7 +1244,7 @@ class GetImageStateMachine:
                            f"/ buffercount:{count}/ buffer t-1:{self.t0_buf & U32}")
                     return AcqState.ERROR, CamError(9009, "get image error (timeout)" + msg)
                 return AcqState.ACQUIRE, None
-            number, frame = ring.get(0 if self.faithful_buffer0 else None)
+            number, frame = ring.get(0 if self.request_buffer_zero else None)
             frame = flip_image(frame, settings.horizontal_flip, settings.vertical_flip)
             if settings.flat_field:
                 frame = flat_field_correct(frame, session.ffc_image, session.dfc_image,
@@ -1263,7 +1263,7 @@ class GetImageStateMachine:
             return AcqState.ERROR, e
 ```
 
-`faithful_buffer0=True` reproduces the LabVIEW request for buffer 0 (§6.4). The default returns the newest frame, which is the evident intent. `ring.get(None)` always returns a frame numbered `> t0_buf` here, because the check just before it guarantees one exists.
+`request_buffer_zero` is a `[compat]` switch ([10-migration-plan.md](10-migration-plan.md) §6); TRUE requests buffer 0 (§6.4). The default (`request_buffer_zero` = TRUE) reproduces LabVIEW. FALSE returns the newest frame, the evident intent, and is enabled once the client is known not to rely on buffer 0 (questionnaire Q32/Q5). `ring.get(None)` always returns a frame numbered `> t0_buf` here, because the check just before it guarantees one exists.
 
 ### 12.8 Reference sketch: `Cam Set Led`
 
@@ -1317,10 +1317,10 @@ def cam_set_led(cam, s, led: bool, camera_sort_led: str, hm_led_line: int, hm_bu
 
 | # | Behaviour | Evidence | Impact | Recommendation |
 |---|---|---|---|---|
-| 1 | `Get Image2` in `Buffer Number` mode with `Buffer Number In` unwired requests buffer 0. | [Doc6 p.554] | Stale first frame during the first 5 frames after `Cam Start` (inferred) | **Fix** (return newest > `t0_buf`); keep a fidelity flag; **ask** whether the client relies on `buffer` |
-| 2 | Freshness: frame `t0_buf + 1` is accepted although its exposure may predate the request. | [Doc6 p.554] | Images taken before a Z move or LED change (inferred) | **Ask** (wait for `t0_buf + 2` or use the trigger) |
+| 1 | `Get Image2` in `Buffer Number` mode with `Buffer Number In` unwired requests buffer 0. | [Doc6 p.554] | Stale first frame during the first 5 frames after `Cam Start` (inferred) | **Fix** (return newest > `t0_buf`); switch `request_buffer_zero`, default LabVIEW ([10-migration-plan.md](10-migration-plan.md) §6); **ask** whether the client relies on `buffer` (questionnaire Q5, Q32) |
+| 2 | Freshness: frame `t0_buf + 1` is accepted although its exposure may predate the request. | [Doc6 p.554] | Images taken before a Z move or LED change (inferred) | **Ask** (wait for `t0_buf + 2` or use the trigger); switch `strict_new_frame` (default FALSE = LabVIEW; [10-migration-plan.md](10-migration-plan.md) §6; questionnaire Q25) |
 | 3 | `t0` / `t0 Buffer Number` are static registers shared by both cameras (if non-reentrant). | [Doc6 p.554] | Interleaved HM/LM streams corrupt each other (inferred) | **Fix** (per-camera state) |
-| 4 | The temperature read error feeds the state machine's `error in`. | [main VI frames d104, d110] | A camera without `DeviceTemperature`, or a transient read error, fails every stream request | **Ask**; probably **fix** (log the temperature error, do not fail the image) |
+| 4 | The temperature read error feeds the state machine's `error in`. | [main VI frames d104, d110] | A camera without `DeviceTemperature`, or a transient read error, fails every stream request | **Ask** (questionnaire Q40). Switch `temperature_error_fails_image`: TRUE = LabVIEW default; FALSE = log the temperature error and still return the image. |
 | 5 | Simulation needs a set-up, real camera (temperature read, `SRC Image`). | [main VI frames d79, d104], §8.1 | Simulation unusable without hardware (inferred) | **Fix** (hardware-free simulation) unless the client depends on the failure |
 | 6 | Self re-enqueue with infinite timeout into a bounded queue; polling through the queue. | [main VI frames d106, d107, d111] | Possible deadlock; CPU; unbounded histories grow per poll | **Fix** (non-blocking wait) |
 | 7 | `Cam Get Image` and `Cam Get Images Array` ("TO BE DEFINED", empty) send no reply; `Last New` with a 5 s default timeout can block the loop. | [main VI frames d98, d169] | Client waits until its own timeout | **Ask** (reply with an error/ack, or drop) |
@@ -1330,10 +1330,10 @@ def cam_set_led(cam, s, led: bool, camera_sort_led: str, hm_led_line: int, hm_bu
 | 11 | `Cam Stop` does not update `Acquisition State` and discards an `AcquisitionInProgress` read error. | [main VI frame d170] | A stream after `Cam Stop` waits for the timeout and then returns 9009 | **Reproduce** the reply; set the state in Python |
 | 12 | `Cam Start` on HM chooses GigE/USB from `Camera Sort: LED` instead of HM's own plug type. | [main VI frame d91] | Wrong trigger path when the lights are on LM and the buses differ | **Fix**; **ask** for confirmation |
 | 13 | `Cam Software Trigger` does nothing on USB and always replies "no error". | [main VI frame d119] | Silent failure | **Ask** |
-| 14 | `Cam Set Exposure` is asymmetric: HM writes `MaxDBL`; LM writes the computed rate only for I64/U32; HM `Max Framerate` is never loaded. | [main VI frames d0, d132, d137–d138, d5] | Different frame-rate behaviour per camera | **Reproduce** by default; **ask** for the intent |
+| 14 | `Cam Set Exposure` is asymmetric: HM writes `MaxDBL`; LM writes the computed rate only for I64/U32; HM `Max Framerate` is never loaded. | [main VI frames d0, d132, d137–d138, d5] | Different frame-rate behaviour per camera | **Reproduce** by default; **ask** for the intent; switch `exposure_sets_max_framerate` (TRUE = LabVIEW; it concerns HM only, since LM writes `fr_calc` only for I64/U32; questionnaire Q16) |
 | 15 | Exposure/frame-rate errors **replace** `source` instead of appending. | [main VI frame d0] | Loses the driver text | **Reproduce** (client-visible) or **ask** |
 | 16 | Gain is not clamped. | [main VI frame d148] | The driver rejects out-of-range values | **Reproduce** |
-| 17 | `Cam Set FlatField` with `Enable` and a missing file returns no error, yet every later acquisition fails in the correction. | [main VI frames d141–d146] | Delayed, confusing errors (inferred) | **Fix** (error at set time) |
+| 17 | `Cam Set FlatField` with `Enable` and a missing file returns no error, yet every later acquisition fails in the correction. | [main VI frames d141–d146] | Delayed, confusing errors (inferred) | Switch `flatfield_check_on_set` (FALSE = LabVIEW default: accept and fail later; TRUE = return the file error at set time). Always log a warning at set time. |
 | 18 | Flat-field factor 0 (typedef default of `Cam Set FlatField`) gives a black image with the inferred formula. | [Doc6 p.365–368 via typedef], §7.3 | Wrong images | **Ask** / validate |
 | 19 | Flip happens before flat-field, so FFC/DFC must be in flipped orientation; "Horizontal Flip" probably flips top/bottom. | [Doc6 p.554, p.930] | Orientation surprises | **Reproduce**; validate on a test image |
 | 20 | Timestamp format `"%H:%M:%S:%3u"` probably yields `HH:MM:SS:.mmm`. | [Doc6 p.554] | Odd string | **Reproduce**; verify |
@@ -1343,27 +1343,27 @@ def cam_set_led(cam, s, led: bool, camera_sort_led: str, hm_led_line: int, hm_bu
 | 24 | LED line numbers always come from the HM section; the bus path comes from `Camera Sort: LED` but the session from the client's `Camera Type`. | [main VI frames d195, d202] | Wrong camera or attributes if the client names the other camera | **Ask** |
 | 25 | `Write Key(lightStatusInverter_BOOL)` with an unwired value, on the configuration refnum that start-up already closed. | [main VI frames d195, d61] | No effect (inferred) | **Do not reproduce** |
 | 26 | LM `Finished` logs with `Camera Type` unwired (HM prefix). | [main VI frame d113] | Wrong log prefix | **Fix** |
-| 27 | Attribute read errors in `Acquire` are ignored (`LastBufferNumber`, `BufferCount`), whereas the same read in `Start` is checked. | [Doc6 p.554, p.556] | A session that breaks after `Start` while `DeviceTemperature` still answers is reported as 9009 after the timeout (inferred); otherwise the temperature read fails first | **Fix** (report the driver error) or **reproduce** the code only |
+| 27 | Attribute read errors in `Acquire` are ignored (`LastBufferNumber`, `BufferCount`), whereas the same read in `Start` is checked. | [Doc6 p.554, p.556] | A session that breaks after `Start` while `DeviceTemperature` still answers is reported as 9009 after the timeout (inferred); otherwise the temperature read fails first | **Reproduce** code 9009 on the wire by default; log the underlying driver error in the diagnostic log. |
 | 28 | Dead code: camera-loop timeout frame (auto `Cam Get Image`), Diagram Disable structures whose active frame is empty (before the command Case, and in `Cam Setup`). | [main VI frames d83, d88, d215–d219] | None | **Do not reproduce** |
 | 29 | `Variant To Data` errors are unwired in most camera commands, so a mismatched payload runs on HM defaults. | [main VI frames d79, d90, d98, d104, d141, d148] | Wrong camera silently | **Fix** (reject), see [03-command-reference.md](03-command-reference.md) |
 | 30 | `Cam Cleanup` sets `Inited = FALSE` even when the close fails; there is no explicit Stop. | [main VI frame d175] | Minor | **Reproduce** |
-| 31 | Error-cluster replies that carry an error are probably never queued (the reply VI's `Enqueue Element` receives the same `error in`). | [Doc6 p.437], §4.1 | Camera failures (`Cam Setup`, `Cam Start`, `Set Exposure`…) reach the client as timeouts | **Ask** (capture first); see [02-tcp-protocol.md](02-tcp-protocol.md) |
+| 31 | Error-cluster replies that carry an error are probably never queued (the reply VI's `Enqueue Element` receives the same `error in`). | [Doc6 p.437], §4.1 | Camera failures (`Cam Setup`, `Cam Start`, `Set Exposure`…) reach the client as timeouts | **Ask** (capture first); switch `send_error_replies` (default FALSE = LabVIEW; [02-tcp-protocol.md](02-tcp-protocol.md) §11.3; questionnaire Q17, Q4) |
 | 32 | `Cam Flip` writes the flags even when the payload cannot be decoded, so a bad payload clears the HM flip flags (inferred). | [main VI frame d178] | Silent orientation change | **Fix** (reject the payload) |
 
 ---
 
 ## 14. Open questions
 
-These are limited to questions that block or change the re-implementation.
+These are limited to questions that block or change the re-implementation. "Qn" refers to the owner questionnaire [open-questions.md](open-questions.md).
 
-1. **Camera hardware.** What are the exact models, buses (GigE / USB3 / FireWire) and vendors of the HM and LM cameras? `BusTypeHM` prints `FireWire` on a panel that was not saved from a running camera. The answer decides the Python library (§12.1–12.2).
-2. **Deployed configuration.** The real `alox.ini` camera sections are needed: attribute names (`exposure_STR`, `gain_STR`, `framerate_STR`), type strings, `cameraconnectortype_STR`, flat-field paths and factor, LED lines, `setLEDcam_I32`. So are the NI MAX camera files loaded by `IMAQdx Open Camera` (pixel format, ROI, trigger source and selector, line configuration, buffer `OverwriteMode`).
-3. **Pixel format and bit depth** of the acquired images (U8 or U16). This drives the flat-field saturation, the image serialisation and the FFC/DFC file formats.
-4. **IMAQdx buffer semantics**, confirmed on the installed driver: `LastBufferNumber` before the first frame, the default `OverwriteMode`, the meaning of `Last New`, and the meaning of `BufferCount`.
-5. **Reentrancy** of `alox_camera_server_get_image_state_machine.vi` (VI properties not printed), which determines whether HM and LM share `t0`.
-6. **Flat-field formula.** A validation set is needed: raw frame, FFC, DFC, factor, and the LabVIEW-corrected output.
-7. **Client dependencies.** Does the client read the custom-data keys (in particular `buffer` and `timestamp`)? Does it rely on getting the oldest buffer right after `Cam Start`? Does it call `Cam Get Image` and expect no reply? Which IMAQdx error codes does it test? Does it rely on getting **no** reply when a camera command fails (§4.1)? A capture of one failing `Cam Setup` or `Cam Start` answers the last point.
-8. **Simulation without hardware.** Is it required? The LabVIEW server needs a set-up camera that answers `DeviceTemperature`.
-9. **LED/bulb wiring and intent.** Which physical lines drive the LED and the bulb? What are the intended semantics of `LEDStatusInverter` / `BulbStatusInverter` / `Invert LED`? Is the `LineSource = 0` write in `Cam Get Led` intended? Should `Wait LED` apply when the light is switched off?
-10. **Software trigger on USB.** Is it expected to work? Should `Cam Start` on HM use HM's plug type?
-11. **HM `Max Framerate`.** What value does the `Camera Settings` constant hold (it is never read from the INI)?
+1. **Camera hardware.** What are the exact models, buses (GigE / USB3 / FireWire) and vendors of the HM and LM cameras? `BusTypeHM` prints `FireWire` on a panel that was not saved from a running camera. The answer decides the Python library (§12.1–12.2; Q7).
+2. **Deployed configuration.** The real `alox.ini` camera sections are needed: attribute names (`exposure_STR`, `gain_STR`, `framerate_STR`), type strings, `cameraconnectortype_STR`, flat-field paths and factor, LED lines, `setLEDcam_I32`. So are the NI MAX camera files loaded by `IMAQdx Open Camera` (pixel format, ROI, trigger source and selector, line configuration, buffer `OverwriteMode`) (Q12, Q34).
+3. **Pixel format and bit depth** of the acquired images (U8 or U16). This drives the flat-field saturation, the image serialisation and the FFC/DFC file formats (Q7).
+4. **IMAQdx buffer semantics**, confirmed on the installed driver: `LastBufferNumber` before the first frame, the default `OverwriteMode`, the meaning of `Last New`, and the meaning of `BufferCount` (Q34).
+5. **Reentrancy** of `alox_camera_server_get_image_state_machine.vi` (VI properties not printed), which determines whether HM and LM share `t0` (Q30).
+6. **Flat-field formula.** A validation set is needed: raw frame, FFC, DFC, factor, and the LabVIEW-corrected output (Q29).
+7. **Client dependencies.** Does the client read the custom-data keys (in particular `buffer` and `timestamp`)? Does it rely on getting the oldest buffer right after `Cam Start`? Does it call `Cam Get Image` and expect no reply? Which IMAQdx error codes does it test? Does it rely on getting **no** reply when a camera command fails (§4.1)? A capture of one failing `Cam Setup` or `Cam Start` answers the last point (Q5, Q17, Q37, Q32; capture Q4).
+8. **Simulation without hardware.** Is it required? The LabVIEW server needs a set-up camera that answers `DeviceTemperature` (Q40).
+9. **LED/bulb wiring and intent.** Which physical lines drive the LED and the bulb? What are the intended semantics of `LEDStatusInverter` / `BulbStatusInverter` / `Invert LED`? Is the `LineSource = 0` write in `Cam Get Led` intended? Should `Wait LED` apply when the light is switched off? (Q8, Q23, Q40)
+10. **Software trigger on USB.** Is it expected to work? Should `Cam Start` on HM use HM's plug type? (Q40)
+11. **HM `Max Framerate`.** What value does the `Camera Settings` constant hold (it is never read from the INI)? (Q30)

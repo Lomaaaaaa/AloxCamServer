@@ -299,7 +299,7 @@ is a connector input that ALOX leaves unwired [Doc6 p.111, p.114]. None of their
 | `RON settings` | reference mode to set before referencing | **(unknown)** |
 
 Consequence: every `Z Setup`, and every automatic re-initialisation (§6), may drive the stage into its negative limit switch. Observe
-the machine to settle it (questionnaire Q11).
+the machine to settle it (questionnaire Q11; Q41 item 7 asks for the values shown on the set-up VI's front panel).
 
 ### 4.4 Referencing prerequisites (PI documentation)
 
@@ -1207,7 +1207,8 @@ Notes on the sketch:
   jobs read after an automatic re-initialisation.
 - Payload values arrive decoded: `bool` (Get Serial), `float` (speed, positions, limits), enum label `str` (Do Reference),
   `(add_wait_ms, polling_ms, add_wait_only)` and `(joystick_id, joystick_axis)` tuples.
-- The `implicit_z_reinit = False` branch returns GCS code 5 for an unreferenced axis; that code is a proposal, not LabVIEW behaviour.
+- The `implicit_z_reinit = False` branch returns GCS code 5 for an unreferenced axis; that code is a proposal, not LabVIEW behaviour
+  (registered in [09-configuration-logging-errors.md](09-configuration-logging-errors.md) §10.5).
 
 ### 13.5 Reference sketch: raw transport without pipython
 
@@ -1261,7 +1262,8 @@ Example: `query("POS? 1")` → `"1=12.500000"`; `send(f"MOV 1 {12.5:.4f}")`; `qu
 ### 13.6 Hardware validation checklist
 
 Run each item against the LabVIEW server and the Python server on the real machine, and compare the frames (serial sniffer or
-pipython's `logfile`), the replies and the stage behaviour:
+pipython's `logfile`), the replies and the stage behaviour. Items 1, 2, 5, 6 and 4 are also asked of the owner as questionnaire Q9,
+Q11 and Q35.
 
 1. `*IDN?` answer, `SAI?` answer, baud rate, port (Q9); content of `MAC? DH` and `MAC? HOME` (Q10).
 2. `Z Setup` twice in a row: does the stage move to the negative limit each time (Q11)?
@@ -1283,10 +1285,10 @@ pipython's `logfile`), the replies and the stage behaviour:
 | Z1 | ACK replies are probably not sent when the error is set (9405, set-up failure, timeouts, controller errors). | [Doc6 p.437], §5.1 | The client only sees its own timeout | Follow the project switch `send_error_replies` (questionnaire Q17, [02](02-tcp-protocol.md)). |
 | Z2 | Before each move, a failed or FALSE `FRF?` closes the link and re-runs the full set-up, possibly with a reference move. Errors are cleared and only an info line is logged. | [Doc6 p.141] | Unexpected motion and multi-second blocking | **Reproduce** by default (switch `implicit_z_reinit`, Q24). The fix branch refuses the move instead. |
 | Z3 | The re-initialisation runs before the range check: an out-of-range move can still trigger a reference move, then reply 9405. | [main VI frames d232, d236] | Motion for a rejected request | **Ask**. For `Z Move Absolute` the range can be checked first at no cost. |
-| Z4 | `MOV`/`MVR` do not read `ERR?`: a move refused by the controller (unreferenced, joystick on, outside controller limits) is acknowledged OK. The error appears at the next `ERR?` of an unrelated command. | [Doc6 p.881, p.1215] | Silent failed moves; misattributed errors | **Reproduce** (client-visible). Ask whether the client calls `Z Get Error`/`Z Get Status` after moves (§15). |
-| Z5 | `Z Move Relative` checks `POS?` + move, then sends `MVR`. If the controller adds the distance to the last commanded target **(inferred, GCS 2.0)**, the check is wrong while a move is running. | [main VI frame d237], [Doc6 p.1212] | Range check possibly bypassed while a move is running | **Ask** (§15 item 9). Option: check against the commanded target (`MOV?`) or refuse while `#5` reports motion. |
+| Z4 | `MOV`/`MVR` do not read `ERR?`: a move refused by the controller (unreferenced, joystick on, outside controller limits) is acknowledged OK. The error appears at the next `ERR?` of an unrelated command. | [Doc6 p.881, p.1215] | Silent failed moves; misattributed errors | **Reproduce** (client-visible). Ask whether the client calls `Z Get Error`/`Z Get Status` after moves (§15 item 7, questionnaire Q32). |
+| Z5 | `Z Move Relative` checks `POS?` + move, then sends `MVR`. If the controller adds the distance to the last commanded target **(inferred, GCS 2.0)**, the check is wrong while a move is running. | [main VI frame d237], [Doc6 p.1212] | Range check possibly bypassed while a move is running | **Ask** (questionnaire Q35; §15 item 9). Option: check against the commanded target (`MOV?`) or refuse while `#5` reports motion. |
 | Z6 | `STP` leaves controller error 10 pending: the next `ERR?` reader (`Z Get Status` → FALSE with error 10, `Z Set Speed`/joystick command → error 10) reports it, unless a set-up purge discards it first (Z22). | [Doc6 p.1208], [main VI frame d241] | Spurious errors after a stop | **Reproduce** (client-visible). |
-| Z7 | `STP 1` is sent with an axis argument, while PI's VI documentation recommends `STP` without argument for these systems. Acceptance by the Mercury firmware is unknown. | [Doc6 p.1208–1209] | Possibly a stop that does not stop (safety) | **Verify on hardware first**. If refused, send `STP` (pipython `STP()`) or `HLT 1`. |
+| Z7 | `STP 1` is sent with an axis argument, while PI's VI documentation recommends `STP` without argument for these systems. Acceptance by the Mercury firmware is unknown. | [Doc6 p.1208–1209] | Possibly a stop that does not stop (safety) | **Verify on hardware first** (questionnaire Q35). If refused, send `STP` (pipython `STP()`) or `HLT 1`. |
 | Z8 | `DH` macro restarted by `Z Get Status`, `Z Stop`, `Z Cleanup` when neither `DH` nor `HOME` runs; reverse logic at start-up; exact string compare. Content unknown. | §10 | Unknown controller actions, possibly motion; a status query has a side effect | **Ask** (Q10, switch `restart_dh_macro`). Read the macros first. |
 | Z9 | `Z Cleanup` queries `RMC?` on the link it has just closed (error, so probably no reply at all, Z1) **(inferred)**, and does not reset `Z Inited`. | [main VI frame d248] | Cleanup always "fails" | **Reproduce** by default (tied to `restart_dh_macro`, as in the sketch); with the switch off, send nothing after the close and reply success. Reset the internal "initialised" flag (not client-visible). |
 | Z10 | Most commands ignore payload decoding errors and run with typedef defaults: `VEL 1 0.0000` (PI: "should not be set to 0"), `FNL`, move by 0, joystick 1/1. `Z Set Min/Max Limit` overwrites the limit with 0.0 and replies with the error. | §5.2, [Doc6 p.716] | Wrong actions on malformed requests | **Fix**: reply the decoding error without acting. |
@@ -1300,7 +1302,7 @@ pipython's `logfile`), the replies and the stage behaviour:
 | Z18 | The focus jobs share the controller without a lock and use the `Z Session` control, stale after a re-initialisation and empty after `Z Cleanup`. | §12 | Interleaved frames, wrong session | **Fix**: one `PiStage` with a lock and a live session ([06](06-autofocus-refocus.md) D20). |
 | Z19 | Wait: 300 s timeout not configurable; 10 ms polling (~100 `#5`/s); the additional wait also runs after a timeout. | §8 | Long blocking; serial load | **Reproduce** the defaults; make the timeout configurable. |
 | Z20 | `Z Pos (mm)` holds the commanded target or the last read value (0.0 after a failed read), never the measured position after a move. | §2.3 | Misleading display | Diagnostics only; no client impact. |
-| Z21 | The source of `Serial Number` (`SN out`) in RS-232 mode is unknown; it may be empty. | §2.2 | `Z Get Serial(Type = F)` content unknown | **Ask** (capture the current reply); the sketch uses the 3rd `*IDN?` field. |
+| Z21 | The source of `Serial Number` (`SN out`) in RS-232 mode is unknown; it may be empty. | §2.2 | `Z Get Serial(Type = F)` content unknown | **Ask** (questionnaire Q35; capture the current reply); the sketch uses the 3rd `*IDN?` field. |
 | Z22 | `Z Setup` and the automatic re-initialisation discard any pending controller error (purge `XXX`/`*idn?`/`err?` at open) **(inferred)**; a refused move or the error 10 of `Z Stop` then never reaches the client. | [Doc6 p.517–518], §3.2 | Lost error reports | **Reproduce** (client-visible); log the discarded code in Python. |
 
 ---
@@ -1312,17 +1314,19 @@ Question numbers "Qn" in this chapter refer to the owner questionnaire [open-que
 1. **Enum values** (questionnaire Q2, [04-data-types.md](04-data-types.md)): numeric codes of the 19 Z commands in `Camera Command`,
    confirmation that they all lie in `"Z Setup".."Z Do Reference"`, and the items and representation of the `Z Do Reference` enum
    (does it contain `FPL`?). Without them the Z payloads cannot be decoded.
-2. **Integer widths** of `Add. Wait (ms)`, `Polling Cycle (ms)`, `Joystick ID`, `Joystick Axis` (I32 or U32): needed to decode
-   `Z Wait End Move` and the joystick commands.
+2. **Integer widths** (questionnaire Q33) of `Add. Wait (ms)`, `Polling Cycle (ms)`, `Joystick ID`, `Joystick Axis` (I32 or U32):
+   needed to decode `Z Wait End Move` and the joystick commands.
 3. **Controller and stage** (Q9): `*IDN?` reply, firmware, real COM port and baud rate, stage model, reference switch or limit switches
    only. This decides `FRF` versus `FNL` and confirms the C-863 assumption.
-4. **Hidden set-up options** (Q11): does `Z Setup` reference every time, or only when `FRF?` is FALSE? Does it move to the middle of
-   the range? Observable on the machine.
+4. **Hidden set-up options** (Q11; Q41 for the option values on the PI set-up VI's front panel; Q35 test 6): does `Z Setup`
+   reference every time, or only when `FRF?` is FALSE? Does it move to the middle of the range? Observable on the machine.
 5. **Macros `DH`/`HOME`** (Q10): content, and whether the automatic restart must be kept.
-6. **`STP 1`**: does the controller stop with this frame, or reject it (error 1 or 15)? Must be tested before relying on `Z Stop`.
-7. **Error replies and error polling** (Q17): does the client ever receive ACK errors today, and does it call `Z Get Error` or
+6. **`STP 1`** (questionnaire Q35): does the controller stop with this frame, or reject it (error 1 or 15)? Must be tested before
+   relying on `Z Stop`.
+7. **Error replies and error polling** (Q17, Q32): does the client ever receive ACK errors today, and does it call `Z Get Error` or
    `Z Get Status` after moves to detect refused moves? This decides whether the new server may check `ERR?` after `MOV`/`MVR`.
-8. **`Z Get Serial`**: what does it return today with `Type = FALSE` (the `SN out` source is invisible)?
-9. **`POS?` and `MVR` semantics** on this controller: does `POS?` return the actual or the target position, and does `MVR` add the
-   distance to the measured position or to the last commanded target? Affects the `Z Move Relative` range check (Z5) and the focus
-   settle logic ([06-autofocus-refocus.md](06-autofocus-refocus.md) open question 8). Testable on the machine (checklist item 4).
+8. **`Z Get Serial`** (questionnaire Q35): what does it return today with `Type = FALSE` (the `SN out` source is invisible)?
+9. **`POS?` and `MVR` semantics** (questionnaire Q35) on this controller: does `POS?` return the actual or the target position, and
+   does `MVR` add the distance to the measured position or to the last commanded target? Affects the `Z Move Relative` range check
+   (Z5) and the focus settle logic ([06-autofocus-refocus.md](06-autofocus-refocus.md) open question 8). Testable on the machine
+   (checklist item 4).

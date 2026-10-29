@@ -60,7 +60,7 @@ See also the primer of [05-camera-acquisition.md](05-camera-acquisition.md) §1.
 | **Error cluster** `{status, code, source}` | Most nodes whose `error in.status` is TRUE do nothing and pass the error on (close and release functions still run, inferred); an unwired `error out` means the error is ignored; `Clear Errors` discards it. | Exceptions with explicit, code-specific suppression ([09](09-configuration-logging-errors.md)). |
 | **"Use Default If Unwired" tunnel** | A case that does not wire an output tunnel outputs the type default (FALSE for a boolean). The TCP loop's stop flag relies on it (only `Quit` wires TRUE); the camera and Z cases wire explicit constants. | Explicit defaults. |
 | **Diagram Disable structure** | Only the `Enabled` frame executes. | Ignore disabled code. |
-| **`Tick Count (ms)`** | Free-running U32 millisecond counter (wraps after about 49.7 days). Every protocol timestamp uses it. | A U32 millisecond counter (§6.2, Q5). |
+| **`Tick Count (ms)`** | Free-running U32 millisecond counter (wraps after about 49.7 days). Every protocol timestamp uses it. | A U32 millisecond counter (§6.2, 01-Q5; questionnaire Q32). |
 | **Non-reentrant sub-VI** | The LabVIEW default: one instance in memory, so two loops calling it are serialised and share its uninitialised shift registers. Reentrancy of the ALOX VIs is **(unknown)**: VI properties are not printed. | Per-caller state where LabVIEW shared it by accident (§9.3). |
 
 ---
@@ -75,7 +75,7 @@ See also the primer of [05-camera-acquisition.md](05-camera-acquisition.md) §1.
 | Connector pane | No terminal [main VI p.1]: a top-level VI, built into an executable (inferred) |
 | VI description and properties | Not printed **(unknown)**: reentrancy, "Automatic error handling", window options |
 | Role | TCP server for one client; executes camera and Z-stage commands; returns typed replies |
-| Instances | Possibly one per "core" (inferred from `[general] core_I32` → `Core #`). `Core #` is wired to every `Log Server Error` call but feeds only disabled code there, so it has no effect ([09](09-configuration-logging-errors.md) D14). Several instances on one PC would each need their own `[hardware.camera] port_I32`. The deployment is **(unknown)** (Q7) |
+| Instances | Possibly one per "core" (inferred from `[general] core_I32` → `Core #`). `Core #` is wired to every `Log Server Error` call but feeds only disabled code there, so it has no effect ([09](09-configuration-logging-errors.md) D14). Several instances on one PC would each need their own `[hardware.camera] port_I32`. The deployment is **(unknown)** (01-Q7; questionnaire Q12, Q36) |
 | Hardware at start-up | Nothing is opened. The only hardware call is the PI macro check (§3.4.3), made with whatever `Z Session` holds. Cameras and stage are opened on demand by the client commands `Cam Setup` and `Z Setup` |
 
 ### 2.2 Context diagram
@@ -181,7 +181,7 @@ gives its default; a failed `Open Config Data` makes **every** value fall back t
 through the three keys of frame 0, the first four keys of frames 1–2 and the first five of frame 3; in frame 5 the first three
 keys receive only the open error. A non-convertible value in a chained key therefore forces the later keys of the same chain to
 their defaults even if they are present ([09](09-configuration-logging-errors.md) §5.4). Whether an unwired error opens a dialog
-depends on the VI's "Automatic error handling" setting **(unknown)** (Q9). The server always starts, whatever the INI contains.
+depends on the VI's "Automatic error handling" setting **(unknown)** (01-Q9; questionnaire Q30, Q41). The server always starts, whatever the INI contains.
 
 #### 3.4.3 PI macro check (inner frame 4) [main VI frames d59, d60; p.42]
 
@@ -197,7 +197,7 @@ Clear Errors(err)
 This is the only hardware access before stage 3. Nothing has opened a PI connection at this point, so in a freshly started
 executable `RMC?` fails, the error is cleared and only `Running macros` changes (inferred). The logic is the **inverse** of
 `Z Get Status` / `Z Stop` / `Z Cleanup`, which restart `DH` when it is *not* running ([08-z-stage.md](08-z-stage.md)).
-Recommendation: skip this frame unless a PI connection already exists (ask, Q8).
+Recommendation: skip this frame unless a PI connection already exists (ask, 01-Q8; questionnaire Q10, Q41).
 
 ### 3.5 Stage 3: run [main VI frame d0; p.3–5]
 
@@ -363,7 +363,7 @@ that the connection is lost. `Connected` is **not** reset to FALSE then; it chan
 The ranges are numeric. Every command handled by the camera loop except `Log` must therefore lie between `Get Heartbeat` and
 `Cam Get Led` in the enum, and every Z command between `Z Setup` and `Z Do Reference`; otherwise its case is unreachable. This
 includes `Exit`, which must be in the camera range for the server to be stoppable (inferred). The real order is **(unknown)**: it is
-the first blocking question of the project (Q1, [04-data-types.md](04-data-types.md)).
+the first blocking question of the project (01-Q1; questionnaire Q2; [04-data-types.md](04-data-types.md) §6.2).
 
 #### 5.2.3 Timing behaviour (consequences of the wiring, inferred)
 
@@ -409,9 +409,10 @@ Every re-enqueued step is one iteration, so a stream or an autofocus adds many h
 | Persistent state | shift register `Z Session` (`System`, `Axes`, `Identity`, `Serial Number`) [Doc6 p.644–645], initialised from the front-panel control `Z Session` when stage 3 starts. The control's saved default is **(unknown)** (in the development environment it keeps the value written by the previous run, inferred). `Z Setup` and `Z Cleanup` also write the control (local); the automatic re-initialisation inside `Z Move Absolute/Relative` updates only the shift register, so the copy read by AF/RF can become stale |
 | Settings | `Z Stage Settings` read (local) for every message; `Z Set Min Limit` / `Z Set Max Limit` write it, in memory only |
 
-Z commands run strictly in arrival order. `Z Do Reference`, `Z Wait End Move`, `Z Setup` (which runs an `FNL` reference move when
-the axis is not referenced) and a `Z Move Absolute/Relative` that triggers the automatic re-initialisation block the loop for the
-whole move ([08-z-stage.md](08-z-stage.md) §4, §6, §12).
+Z commands run strictly in arrival order. `Z Do Reference`, `Z Wait End Move`, `Z Setup` (which may run an `FNL` reference move,
+either every time or only when the axis is not referenced, depending on hidden options of PI's password-protected set-up VI:
+[08-z-stage.md](08-z-stage.md) §4.3; questionnaire Q11, Q41) and a `Z Move Absolute/Relative` that triggers the automatic
+re-initialisation block the loop for the whole move ([08-z-stage.md](08-z-stage.md) §4, §6, §12).
 
 ---
 
@@ -431,7 +432,7 @@ TCP loop, state "Send Response"
 
 | Sub-VI (icon) | `Response (Flattened)` | Sent when the command failed? |
 |---|---|---|
-| `Enqueue Send Error Cluster Reponse.vi` ("CAM SERVER RESP") [Doc6 p.435–438] | the error cluster alone | **probably not**: `error in` is also wired to the `error in` of `Enqueue Element`, so an error skips the enqueue and the client times out (strongly plausible; confirm with a capture, Q4) |
+| `Enqueue Send Error Cluster Reponse.vi` ("CAM SERVER RESP") [Doc6 p.435–438] | the error cluster alone | **probably not**: `error in` is also wired to the `error in` of `Enqueue Element`, so an error skips the enqueue and the client times out (strongly plausible; confirm with a capture, questionnaire Q4/Q17) |
 | `Enqueue Send STR / Boolean / DBL / U32 / DBL 2D Array Response.vi` [Doc6 p.443–446, 455–458, 463–466, 559–562, 1124–1127] | `{Value, error}` | yes: the error is data; the enqueue fails only on a queue error |
 | `Enqueue Send Image Response.vi` [Doc6 p.571–574] | `{IMAQ Flatten Image to String(image), error}` | yes |
 
@@ -448,7 +449,7 @@ Encoding: [02-tcp-protocol.md](02-tcp-protocol.md). Reply type of each command: 
 | reply `TCP Sending timestamp` | TCP loop, `Send Response` | every reply, just before the write |
 
 Client and server run on the same PC (loopback only), so the client may compare these values with its own `Tick Count` (inferred).
-Whether it does decides whether Python must reproduce LabVIEW's millisecond counter, epoch included (Q5).
+Whether it does decides whether Python must reproduce LabVIEW's millisecond counter, epoch included (01-Q5; questionnaire Q32).
 
 ### 6.3 Correlation, ordering, missing replies
 
@@ -558,7 +559,7 @@ its own queue never wakes up.
 
 H2 is the most likely: it needs only a client that keeps several camera commands outstanding (for example progress polls from
 several client callers) during an autofocus or a stream. Whether the client ever has several commands outstanding is
-**(unknown)** (Q3).
+**(unknown)** (01-Q3; questionnaire Q32).
 
 ### 9.2 Unsynchronised shared memory
 
@@ -594,7 +595,7 @@ loop), `Z Session` (two diverging copies), `error out` (written by both consumer
 | Panel objects, local variables | one `ServerState` with an `RLock`; settings replaced as whole objects | fixes §9.2 |
 | Two copies of `Z Session`, PI calls from two loops | one `ZStage` link shared by the z thread and the focus code, one lock per GCS request/answer | [08-z-stage.md](08-z-stage.md) |
 | Histories | `deque(maxlen=…)`; temperatures time-stamped | fixes unbounded growth |
-| `Tick Count (ms)` | `int(time.monotonic() * 1000) & 0xFFFFFFFF` | LabVIEW's exact epoch only if Q5 requires it |
+| `Tick Count (ms)` | `int(time.monotonic() * 1000) & 0xFFFFFFFF` | LabVIEW's exact epoch only if questionnaire Q32 (item e) requires it |
 
 ### 10.2 Thread and queue layout
 
@@ -632,7 +633,7 @@ Reference sketch. It was run against a fake client: routing, an unknown command,
 an undecodable command payload, camera and Z replies overtaking each other, a client that stops reading, reconnection, `Exit`
 shutdown, queue bound and destroy. Frame reading and payload decoding are injected (`read_frame`, `is_command`, `decode`) because
 they belong to [02-tcp-protocol.md](02-tcp-protocol.md) and [04-data-types.md](04-data-types.md). The two command sets come from the
-real enum order (Q1). Handlers and reply encoding are in chapters 03, 05, 06 and 08.
+real enum order (questionnaire Q2). Handlers and reply encoding are in chapters 03, 05, 06 and 08.
 
 ```python
 # Reference sketch: server skeleton with threads (wire format in 02 and 04, handlers in 05, 06, 08).
@@ -859,22 +860,23 @@ Notes:
   connection ([02-tcp-protocol.md](02-tcp-protocol.md) §13 D10), tag each routed `Msg` with a connection counter and let `send()`
   discard a reply whose counter is not the current one.
 - Handlers set `ServerState.error_out` and log as specified in [09-configuration-logging-errors.md](09-configuration-logging-errors.md).
-- `host` keeps the LabVIEW loopback-only binding by default (Q6).
+- `host` keeps the LabVIEW loopback-only binding by default (questionnaire Q36).
 
 ### 10.4 Fidelity checklist (behaviour visible to the client)
 
 Switch names are those of [10-migration-plan.md](10-migration-plan.md) §6 and [02-tcp-protocol.md](02-tcp-protocol.md) §11.3; a
-behaviour the client can observe keeps the LabVIEW default until Q2/Q4 are answered.
+behaviour the client can observe keeps the LabVIEW default until questionnaire Q1, Q4 and Q17 are answered. The complete list of
+switches and their defaults is in [10-migration-plan.md](10-migration-plan.md) §6.
 
 | Behaviour | Decision |
 |---|---|
-| Loopback-only listener on `port_I32` (default 503), one client at a time | keep (`listen_address`, Q6) |
+| Loopback-only listener on `port_I32` (default 503), one client at a time | keep (`listen_address`, Q36) |
 | Client heartbeat/image/response frames ignored; no server heartbeat frames | keep |
 | Camera commands serialised in one thread, Z commands in another | keep |
 | `Command Receiving Timestamp` set at routing time, camera commands only; `TCP Sending timestamp` set just before each write | keep |
 | No reply to `Exit`, `Cam Get Image`, `Cam Get Images Array` | keep |
-| No reply to unknown commands and `Default` cases | keep by default (`reply_unknown_commands`, Q2) |
-| Error-cluster replies suppressed when the command fails | keep by default (`send_error_replies`, Q4); recommended once confirmed: send them |
+| No reply to unknown commands and `Default` cases | keep by default (`reply_unknown_commands`, Q1/Q4) |
+| Error-cluster replies probably suppressed when the command fails (inferred from [Doc6 p.437]; confirm by capture, questionnaire Q4/Q17) | keep by default (`send_error_replies`, Q17/Q4); recommended once confirmed: send them |
 | Undecodable command payload executed as a default element | drop: log and discard the frame |
 | ≥ 50 ms gap between command reads; 2 s `Listen` retry | drop (`inbound_pause_ms` = 0; performance only) |
 | Deadlocks, unbounded histories, `Connected` left TRUE, no cleanup at `Exit` | drop |
@@ -891,8 +893,8 @@ behaviour the client can observe keeps the LabVIEW default until Q2/Q4 are answe
 | A4 | After a successful read, the next `Read` waits for 50 ms of empty queue | [main VI frames d0, d71] | ≥ 50 ms per command; reads delayed by frequent replies | **Fix** |
 | A5 | If `TCP Close` fails after a read error, `Listen` is never enqueued | [main VI frame d64] | the server never accepts a connection again and loops `Read` → error every 50 ms (inferred) | **Fix** (always go back to listening) |
 | A6 | `Connected` not reset on disconnection; `Listen` overwrites the old connection refnum without closing it | [main VI frames d62, d64] | misleading status | **Fix** |
-| A7 | Listener bound to `localhost` only | [main VI frame d62] | no remote client possible | **Reproduce** by default, address configurable; **ask** (Q6) |
-| A8 | Unknown commands and `Default` cases are dropped silently (only `Commands History` records them) | [main VI frames d65, d73, d220] | the client waits for its timeout | **Reproduce** on the wire and log a warning; reply only if the protocol may change (Q2) |
+| A7 | Listener bound to `localhost` only | [main VI frame d62] | no remote client possible | **Reproduce** by default, address configurable; **ask** (Q36) |
+| A8 | Unknown commands and `Default` cases are dropped silently (only `Commands History` records them) | [main VI frames d65, d73, d220] | the client waits for its timeout | **Reproduce** on the wire and log a warning; reply only if the protocol may change (Q1, Q4) |
 | A9 | `Send Heartbeat` and `Quit` states never enqueued; client heartbeat frames discarded | [main VI frames d67, d68, d70] | dead code | **Reproduce** (ignore the frames); do not implement the dead states |
 | A10 | Shutdown only through `Exit` routed to the camera loop and forwarded to Z; no hardware close; connection not closed; replies of commands queued before `Exit` lost | [main VI frames d78, d0, d251] | resources left to the OS; possible hang (§7.2) | **Fix**: shutdown event and explicit cleanup; still no reply to `Exit` |
 | A11 | Unbounded `Array` and `Temperature Graph`, one entry per camera-loop iteration (every re-enqueued step, "no error" entries included) | [main VI frame d0] | memory growth over days | **Fix** (bounded, time-stamped) |
@@ -901,7 +903,7 @@ behaviour the client can observe keeps the LabVIEW default until Q2/Q4 are answe
 | A14 | `CAM Queue Size` read once; `TCP Queue Size` taken from an unidentified output | [main VI frame d0] | wrong display | **Fix** (display only) |
 | A15 | `Enqueue Send … Response` obtains the TCP queue by name at every call and never releases it | [Doc6 p.437, 445, 573] | one leaked reference per reply (inferred) | n/a in Python |
 | A16 | Settings and sessions in panel objects shared through unsynchronised local variables; two diverging copies of `Z Session` | §8.2 | stale or torn reads | **Fix** (one locked state, one Z link) |
-| A17 | Stage-2 PI macro check runs before any connection exists, with the inverse logic of `Z Get Status` | [main VI frame d59] | no effect in a fresh process | **Ask** (Q8); default: skip |
+| A17 | Stage-2 PI macro check runs before any connection exists, with the inverse logic of `Z Get Status` | [main VI frame d59] | no effect in a fresh process | **Ask** (Q10, Q41); default: skip |
 | A18 | Every INI read error ignored; chained errors force later keys to their defaults | [main VI frames d4–d61] | silent misconfiguration | **Fix**: per-key default plus a logged warning ([09](09-configuration-logging-errors.md)) |
 | A19 | Obsolete labels: stage-2 path label, folder VI name, "Low/High Angle" wire labels | [main VI frames d3, d0; Doc6 p.411] | confusion only | n/a |
 | A20 | `Unflatten From String` error unwired in `Read`: an undecodable `Command` payload is routed as a default element (inferred: `Cam Setup`) | [main VI frame d0]; [02](02-tcp-protocol.md) §7.6 | a garbled frame is executed as a real command (inferred) | **Fix**: log and drop the frame |
@@ -915,13 +917,13 @@ Only the items that change the architecture. Brackets give the matching entries 
 
 | # | Question | Why it matters |
 |---|---|---|
-| Q1 | Item order and representation of `typedef_ext_camera_camera_command.ctl`: is `Exit` between `Get Heartbeat` and `Cam Get Led`? Is `Z Do Reference` the last Z item? Where are `Log`, `Cam Autofocus Run`, `Cam Refocus Run`? [Q2, Q4] | Routing is by numeric range: a misplaced item is never executed, and `Exit` outside the camera range would make the server unstoppable |
-| Q2 | Will the client stay unchanged (byte-compatible server), or may the protocol change? [Q1] | Decides whether unknown commands, failed ACKs and `Exit` may get replies |
-| Q3 | Does the client ever have several commands outstanding (several callers, pipelining)? [Q4, Q28] | Decides whether the deadlocks H1–H4 can happen and how much reply reordering the client tolerates |
-| Q4 | Are error-cluster replies really suppressed when the command fails? [Q4, Q17] | If the client treats timeouts as error signals, sending error replies changes its behaviour |
-| Q5 | Does the client compare reply timestamps with its own `Tick Count`? | Decides whether Python must reproduce LabVIEW's millisecond counter, epoch included |
-| Q6 | Is the client always on the same PC? (not yet in the questionnaire) | Loopback-only listener (A7) |
-| Q7 | Does more than one server instance (`Core #`) run on a PC: one executable per core, each with its own `alox_setup.ini`, `alox.ini` and port? [Q12] | Process model, configuration lookup, shared log files ([09](09-configuration-logging-errors.md) D14) |
-| Q8 | Saved default of the `Z Session` control (not yet in Q30), and purpose of the stage-2 macro check [Q10] | Whether stage 2 may touch the PI controller |
-| Q9 | Reentrancy of `Log Server Error.vi`, the `Enqueue Send … Response` VIs, the state-machine and focus VIs; "Automatic error handling" of the main VI [Q30] | Whether parallel loops were serialised, and whether unwired errors opened dialogs |
-| Q10 | Is a GUI needed (live image, histories, `Show UI`)? [Q15] | Whether §8.3–§8.4 need a display layer |
+| 01-Q1 | Item order and representation of `typedef_ext_camera_camera_command.ctl`: is `Exit` between `Get Heartbeat` and `Cam Get Led`? Is `Z Do Reference` the last Z item? Where are `Log`, `Cam Autofocus Run`, `Cam Refocus Run`? [Q2, Q4] | Routing is by numeric range: a misplaced item is never executed, and `Exit` outside the camera range would make the server unstoppable |
+| 01-Q2 | Will the client stay unchanged (byte-compatible server), or may the protocol change? [Q1] | Decides whether unknown commands, failed ACKs and `Exit` may get replies |
+| 01-Q3 | Does the client ever have several commands outstanding (several callers, pipelining)? [Q4, Q28, Q32] | Decides whether the deadlocks H1–H4 can happen and how much reply reordering the client tolerates |
+| 01-Q4 | Are error-cluster replies really suppressed when the command fails? [Q4, Q17] | If the client treats timeouts as error signals, sending error replies changes its behaviour |
+| 01-Q5 | Does the client compare reply timestamps with its own `Tick Count`? [Q32] | Decides whether Python must reproduce LabVIEW's millisecond counter, epoch included |
+| 01-Q6 | Is the client always on the same PC? [Q36] | Loopback-only listener (A7) |
+| 01-Q7 | Does more than one server instance (`Core #`) run on a PC: one executable per core, each with its own `alox_setup.ini`, `alox.ini` and port? [Q12, Q36] | Process model, configuration lookup, shared log files ([09](09-configuration-logging-errors.md) D14) |
+| 01-Q8 | Saved default of the `Z Session` control, and purpose of the stage-2 macro check [Q10, Q41] | Whether stage 2 may touch the PI controller |
+| 01-Q9 | Reentrancy of `Log Server Error.vi`, the `Enqueue Send … Response` VIs, the state-machine and focus VIs; "Automatic error handling" of the main VI [Q30, Q41] | Whether parallel loops were serialised, and whether unwired errors opened dialogs |
+| 01-Q10 | Is a GUI needed (live image, histories, `Show UI`)? [Q15] | Whether §8.3–§8.4 need a display layer |

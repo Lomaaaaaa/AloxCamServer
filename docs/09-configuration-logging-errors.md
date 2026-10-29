@@ -891,8 +891,8 @@ tracebacks. Proposed location: `<vision>\logs\<yymmdd>_camera_server_diag.log`.
 |---|---|---|---|---|---|
 | **9009** | `"get image error (timeout)"` + `"lastbuffer:<n>/ buffercount:<n>/ buffer t-1:<n>"` | TRUE | `alox_camera_server_get_image_state_machine.vi`, no new buffer within `Acquisition Timeout (ms)` | image reply of `Cam Stream Next Image`, error log | [Doc6 p.555]; [05](05-camera-acquisition.md) |
 | **−9011** | `"Invalid Type"` | TRUE | `alox_camera_server_simulation.vi`, unsupported PNG pixel type | image reply (simulation), error log | [Doc6 p.921]; [05](05-camera-acquisition.md) |
-| **9031** | `"'refocus' warning (joystick enabled)"` | **TRUE** (despite "warning") | refocus, joystick active (`JON?`) | refocus `Error` state, error log (`Cam Refocus Run` has no reply) | [Doc6 p.1034]; [06](06-autofocus-refocus.md) |
-| **9401** | `"z stage get position timeout"` | TRUE | autofocus Fast mode (30 000 ms) [Doc6 p.608]; refocus `Check Position` / `Wait Focus` (5000 ms) [Doc6 p.1035, 1037] | AF/RF `Error` state, error log | [06](06-autofocus-refocus.md) |
+| **9031** | `"'refocus' warning (joystick enabled)"` | **TRUE** (despite "warning") | refocus `Start` step (inside `Cam Refocus`), joystick active (`JON?`) | the ACK of `Cam Refocus` (probably not sent, [02-tcp-protocol.md](02-tcp-protocol.md) §8.4; questionnaire Q17); `RF State` ← `Error`; no `Cam Refocus Run` is queued; error log with Extra "Refocus" | [Doc6 p.1034]; [main VI frames d186–d190]; [03-command-reference.md](03-command-reference.md) §6.2; [06-autofocus-refocus.md](06-autofocus-refocus.md) §3.1 |
+| **9401** | `"z stage get position timeout"` | TRUE | autofocus Fast mode (30 000 ms) [Doc6 p.608]; refocus `Check Position` / `Wait Focus` (5000 ms) [Doc6 p.1035, 1037] | session state ← `Error` (the restore state itself never runs, [06](06-autofocus-refocus.md) D1); no reply (`Cam … Run`); error log | [06](06-autofocus-refocus.md) |
 | **9405** | `"Z move out of range"` | TRUE | `Z Move Absolute` / `Z Move Relative`, target outside `[min(zmin, zmax), max(zmin, zmax)]`. It replaces any earlier error. | ACK reply (probably not sent), Z error log | [main VI frames d233, d236]; [08](08-z-stage.md) |
 | **−1** | `"HW TCP Extract TCP Data.vi<ERR>\nExtra Data Found"` (caller-name prefix: §8.1) | TRUE | `HW TCP Extract TCP Data.vi`, heartbeat frame with a payload, via `Error Cluster From Error Code` | TCP loop: connection closed and re-listen (not logged) | [Doc6 p.1153]; [02](02-tcp-protocol.md) §5.3 |
 
@@ -944,10 +944,12 @@ found"). Only the `source` text tells them apart. The vendor tables are not copi
 
 ### 10.2 Classes and helpers
 
-The sibling chapters use local names in their sketches: `CamError` ([05](05-camera-acquisition.md)), `LVError`
-([03](03-command-reference.md), [06](06-autofocus-refocus.md)), `StageError` ([08](08-z-stage.md)), `FocusMetricError`
-([07](07-focus-metrics.md)), `ProtocolError` ([02](02-tcp-protocol.md)). In the implementation they map onto this one module
-(`errors.py` in [10-migration-plan.md](10-migration-plan.md) §3.2).
+The sibling chapters use local names in their sketches. They map onto this one module (`errors.py` in
+[10-migration-plan.md](10-migration-plan.md) §3.2) as follows: the frozen dataclass of [03](03-command-reference.md) §4.5 (a local
+stand-in, already named `ErrorCluster` there) = `ErrorCluster`; [06](06-autofocus-refocus.md) §9.2 `LVError` (exception) =
+`AloxError`; [05](05-camera-acquisition.md) `CamError` = `CameraError`; [07](07-focus-metrics.md) `FocusMetricError` = `FocusError`;
+[08](08-z-stage.md) `StageError` and [02](02-tcp-protocol.md)/[04](04-data-types.md) `ProtocolError` keep their names. These are the
+canonical names. [10-migration-plan.md](10-migration-plan.md) §3.2/§4 must call the cluster `ErrorCluster`.
 
 ```python
 # Reference sketch: LabVIEW error clusters and the Python exception hierarchy (errors.py).
@@ -1085,10 +1087,26 @@ def z_move_absolute(ctx, msg) -> None:
 ### 10.5 Codes for conditions LabVIEW reports with NI codes we cannot reproduce
 
 Some failures surface in LabVIEW as NI-internal codes that a Python stack cannot reproduce: NI Vision file errors, IMAQdx open
-failures with no SDK equivalent, and unexpected exceptions. **Proposal (to confirm, open question 5):** reserve one block inside
-LabVIEW's user range that ALOX does not use, e.g. **9500–9599**, and define the codes in `Code`. Examples: 9500 internal error
-(unexpected exception), 9501 image file read/write failed, 9502 camera SDK error without an IMAQdx equivalent, 9503 focus metric
-failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes keep theirs wherever the Python stack can know them.
+failures with no SDK equivalent, and unexpected exceptions. **Proposal (to confirm, open question 5, questionnaire Q37):** reserve
+one block inside LabVIEW's user range that ALOX does not use, e.g. **9500–9599**, and define the codes in `Code`. Examples: 9500
+internal error (unexpected exception), 9501 image file read/write failed, 9502 camera SDK error without an IMAQdx equivalent, 9503
+focus metric failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes keep theirs wherever the Python stack can
+know them.
+
+Codes the other chapters already propose for new Python behaviour (none of them is LabVIEW behaviour; the switches are those of
+[10-migration-plan.md](10-migration-plan.md) §6):
+
+| Code | `source` text | Raised by (Python only) | Reaches | Ref. |
+|---|---|---|---|---|
+| **5** (PI GCS "unallowable move attempted on unreferenced axis") | `"Z axis not referenced"` | `Z Move …` on an unreferenced axis when `implicit_z_reinit` = FALSE (instead of the implicit re-initialisation) | ACK of the move, Z error log | [08](08-z-stage.md) §13.4, Z2 |
+| **9405** (reused) | `"Z move out of range"` | `Cam Autofocus` start with `[Z Min, Z Max]` outside `[Min, Max Position]` when `af_check_z_limits` = TRUE | ACK of `Cam Autofocus`, error log | [06](06-autofocus-refocus.md) D5 |
+| **9401** (reused) | `"z stage get position timeout"` | new timeouts of AF Slow `Goto Z Pos` and AF Fast `Wait Started` (fix, no switch) | as 9401 in §9.1 (background step: no reply) | [06](06-autofocus-refocus.md) D6 |
+| **95xx** (e.g. 9504) | to define | AF/RF start with invalid parameters when `focus_validate_params` = TRUE | ACK of `Cam Autofocus` / `Cam Refocus`, error log | [06](06-autofocus-refocus.md) D8 |
+| **95xx** (e.g. 9505) | to define | second AF/RF start while a job runs, when `focus_reject_concurrent_start` = TRUE | ACK of the start command, error log | [06](06-autofocus-refocus.md) D4 |
+
+GCS code 5 is positive and therefore shares the PI controller family (§9.2): only the `source` text tells it apart from a code 5
+read by `ERR?`. The error ACKs above are sent only when `send_error_replies` ([02-tcp-protocol.md](02-tcp-protocol.md) §11.3) is
+TRUE.
 
 ---
 
@@ -1109,13 +1127,13 @@ failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes kee
 | D11 | `Log Server Infos` swaps the labels: Low Mag → `INFO (HI)`, High Mag → `INFO (LO)`. | [Doc6 p.1220] | wrong labels (camera infos unused here) | **Fix** (Q18) |
 | D12 | Errors and infos go to different folders (`<vision>\logs` versus `<data>\logs`). | [Doc6 p.432, 1220] | two places to look | **Reproduce** (configurable); **ask** whether intended |
 | D13 | The `logs` folder is never created, and all file errors are cleared. | [Doc6 p.432, 1220] | lines silently lost | **Fix**: create at start-up; report failures in the diagnostic log |
-| D14 | `Core #` (`[general] core_I32`) only feeds disabled code; all instances share one daily file. | [Doc6 p.432, 1220] | interleaved lines from several instances | **Reproduce** naming; **ask** about per-core files |
+| D14 | `Core #` (`[general] core_I32`) only feeds disabled code; all instances share one daily file. | [Doc6 p.432, 1220] | interleaved lines from several instances | **Reproduce** naming; **ask** about per-core files (Q36) |
 | D15 | Unwired `Camera Type` / `Command` inputs: Low Mag errors tagged `HI MAG`; unwired `Command` would print `Get Heartbeat`. | [main VI frames d104–d115]; [Doc6 p.431] | misleading log lines | **Fix** when the camera is known |
 | D16 | Custom code −9011 is negative, outside LabVIEW's user ranges, unlike the other ALOX codes. | [Doc6 p.921] | none functional | **Reproduce** −9011 on the wire |
 | D17 | Code 9031 is called a "warning" but has `status = TRUE`. | [Doc6 p.1034] | refocus aborts | **Reproduce** |
 | D18 | `get_image_state_machine` returns `{FALSE, 0, "<diagnostic text>"}` while waiting: "no error" with a source text. | [Doc6 p.555] | none for the client: only the re-enqueue path sees it (§8.2) **(inferred)** | **Do not reproduce** (as [05](05-camera-acquisition.md) §10.1); in general keep `source` verbatim whatever `status` |
 | D19 | The on-screen log is wiped completely past `Max Lines`, adds blank lines, and its target (`String`) is overwritten by `Cam Set Led`. `Log` is never written. | [Doc6 p.432]; [main VI frame d71] | no reliable on-screen history | **Fix** (ring buffer) or drop if headless |
-| D20 | "Automatic error handling" state unknown: if enabled, unwired errors would open modal dialogs in the hidden window. | not printed | possible hang of the LabVIEW server | n/a for Python; **ask** (Q30) for root-cause analysis only |
+| D20 | "Automatic error handling" state unknown: if enabled, unwired errors would open modal dialogs in the hidden window. | not printed | possible hang of the LabVIEW server | n/a for Python; **ask** (Q30, Q41) for root-cause analysis only |
 | D21 | Error-only ACK replies are probably never sent. | [Doc6 p.437] | client timeouts | see [02-tcp-protocol.md](02-tcp-protocol.md) §8.4 (Q17) |
 
 ---
@@ -1127,16 +1145,17 @@ failed. Every observed ALOX code (§9.1) keeps its value. NI-IMAQdx/PI codes kee
 1. **Real configuration files (questionnaire Q12).** What are the actual `alox_setup.ini` and `alox.ini`? This tells us their
    encoding, their quoting style, and whether they hold keys this server does not read. It also lets us run a golden test of the
    reader against them.
-2. **Is `alox.ini` shared with other ALOX programs** (Vision Core, the monochromator or XY servers suggested by the log VI)? This
-   decides where the Python-only settings go: a separate file such as `<settings>\alox_camera_server.ini` (proposed) or a
-   `[compat]` section in `alox.ini` ([10-migration-plan.md](10-migration-plan.md) §6). It also confirms that the server must never
-   write `alox.ini`.
+2. **Is `alox.ini` shared with other ALOX programs** (Vision Core, the monochromator or XY servers suggested by the log VI)?
+   The plan already keeps the Python-only settings, including the `[compat]` switches, in a separate file
+   (`<settings>\alox_camera_server.ini`, [10-migration-plan.md](10-migration-plan.md) §6), and the server never writes
+   `alox.ini`. The answer (questionnaire Q36) confirms that choice and tells whether other programs depend on the file's current
+   content.
 3. **Do other tools read the event logs?** If so, the file names, the folders (D12) and the line format must stay byte-exact,
-   including the `%3u` decimal separator of the production machine's locale. And may D10/D11 be fixed (Q18)?
+   including the `%3u` decimal separator of the production machine's locale. And may D10/D11 be fixed (Q18, Q38)?
 4. **Does the client test error codes or parse `source`?** For example, does it check for 9405 or 9009, or display text with
-   `<ERR>`? This decides how strictly decorations must match and whether a missing NI code can be replaced.
+   `<ERR>`? This decides how strictly decorations must match and whether a missing NI code can be replaced (questionnaire Q37).
 5. **May the Python server use the code block 9500–9599 (§10.5)** for conditions it cannot express with NI codes? Or does ALOX
-   already use those codes elsewhere?
-6. **Does more than one server instance (`Core #`) run on one machine?** If so, were per-core log folders intended (D14)?
+   already use those codes elsewhere (questionnaire Q37)?
+6. **Does more than one server instance (`Core #`) run on one machine?** If so, were per-core log folders intended (D14; questionnaire Q36)?
 7. **Installation folder and target OS (Q13).** Where does the executable live, and is that folder writable? It affects D2. On
    Linux, how should the `D:\…` defaults map?
