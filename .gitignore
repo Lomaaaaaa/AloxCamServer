@@ -10,3 +10,6 @@ dist/
 # Local runtime output
 logs/
 *.log
+
+# Claude Code agent worktrees
+.claude/worktrees/
