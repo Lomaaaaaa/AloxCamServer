@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aloxcam"
+version = "0.1.0"
+description = "Python re-implementation of the ALOX Camera Server (LabVIEW)"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]            # pipython / camera SDK extras are added in phases 2-3
+
+[project.scripts]
+aloxcam = "aloxcam.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aloxcam = ["data/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tools", "tests"]
+addopts = "--import-mode=importlib"
+markers = ["integration: end-to-end tests with a live server on loopback", "slow: > 2 s"]

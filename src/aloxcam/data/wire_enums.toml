@@ -1,0 +1,66 @@
+# aloxcam/data/wire_enums.toml — item orders from the owner's Edit Items screenshots (docs/answers/owner-answers.md §1).
+# Representation: Camera Command is U16 (confirmed); the others are assumed U16 (LabVIEW default).
+# Override in <settings>/alox_camera_server.ini: [wire] enums_file, [wire.items], [wire.size].
+schema = 1
+
+[enums.tcp_datatype]
+label = "TCP DataType"
+ctl = "HW TCP Datatype.ctl"
+size = 2                      # must be 2 (02 §5.2)
+provisional = false
+items = ["Command", "Response", "Image", "Heartbeat", "Statut"]   # "Statut" (4): new item, not used by the server
+
+[enums.camera_command]
+label = "Function"
+ctl = "typedef_ext_camera_camera_command.ctl"
+size = 2                      # U16, confirmed
+provisional = false
+items = [
+  # 0..25: camera range "Get Heartbeat".."Cam Get Led" (includes Exit, Show UI and the two internal Run commands)
+  "Get Heartbeat", "Cam Setup", "Cam Start", "Cam Get Image", "Cam Stream Next Image", "Cam Get Acquisition Status",
+  "Cam Software Trigger", "Cam Set Exposure", "Cam Get Exposure", "Cam Set Gain", "Cam Get Gain", "Cam Get Images Array",
+  "Cam Stop", "Cam Cleanup", "Exit", "Show UI", "Cam Autofocus", "Cam Set FlatField", "Cam Refocus", "Cam Flip",
+  "Cam Get Autofocus Data", "Cam Get Autofocus Progress", "Cam Autofocus Run", "Cam Refocus Run", "Cam Set Led", "Cam Get Led",
+  # 26..44: Z range "Z Setup".."Z Do Reference"
+  "Z Setup", "Z Get Serial", "Z Get Status", "Z Get Error", "Z Set Speed", "Z Get Speed", "Z Get Position",
+  "Z Move Absolute", "Z Move Relative", "Z Wait End Move", "Z Stop", "Z Enable Joystick", "Z Disable Joystick",
+  "Z Joystick Enabled ?", "Z Set Min Limit", "Z Set Max Limit", "Z Cleanup", "Z Get Reference", "Z Do Reference",
+  # 45: explicit camera route
+  "Log",
+]
+
+[enums.camera_type]
+label = "Camera Type"
+ctl = "alox_typedef_camera_type.ctl"
+size = 2
+provisional = false
+items = ["High Mag.", "Low Mag."]
+
+[enums.autofocus_speed]
+label = "Autofocus Speed"
+ctl = "alox_typedef_autofocus_speed.ctl"
+size = 2
+provisional = false
+items = ["Slow", "Fast"]
+
+[enums.autofocus_method]
+label = "Autofocus Method"
+ctl = "alox_typedef_autofocus_method.ctl"
+size = 2
+provisional = false
+items = ["FFT", "Sobel", "Prewitt", "Diff", "Gradient", "Sigma", "FULL"]
+
+[enums.refocus_method]
+label = "Refocus Method"
+ctl = "alox_typedef_refocus_method.ctl"
+size = 2
+provisional = false
+items = ["Fin", "Oxyd"]
+
+[enums.z_reference_method]
+label = "Z Reference Method"
+ctl = "(bare enum in the main VI)"
+size = 2
+provisional = true            # still unknown: only FNL (Default) and FRF have a case
+lenient = true                # any value other than FRF runs FNL (08 §5.3)
+items = ["FNL", "FRF"]
