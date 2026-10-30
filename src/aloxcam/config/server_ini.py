@@ -103,7 +103,7 @@ hm_max_framerate = 0
 bulb_status_inverter = FALSE
 
 [stage]
-always_reference = FALSE
+always_reference = TRUE
 reference_move = FNL
 ready_timeout_s = 300
 wait_timeout_s = 300

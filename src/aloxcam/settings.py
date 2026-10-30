@@ -213,7 +213,7 @@ class CameraOptions:
 class StageOptions:
     """``[stage]`` (08 §2.4, §4.3, §8, Z13)."""
 
-    always_reference: bool = False       # hidden "Check FRF?" option (08 §4.3): FALSE = reference only if FRF? is FALSE
+    always_reference: bool = True        # hidden "Check FRF?" option (08 §4.3); TRUE = reference at every Z Setup (owner Q11)
     reference_move: str = "FNL"          # "FNL" | "FPL"
     ready_timeout_s: float = 300.0
     wait_timeout_s: float = 300.0        # General wait for movement to stop (08 §8, Z19)

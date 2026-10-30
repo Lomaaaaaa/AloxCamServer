@@ -425,7 +425,7 @@ class CameraOptions:                     # [camera] (Python-only values the prin
 
 @dataclass(frozen=True)
 class StageOptions:                      # [stage]
-    always_reference: bool = False       # hidden "Check FRF?" option (08 §4.3): FALSE = reference only if FRF? is FALSE
+    always_reference: bool = True        # hidden "Check FRF?" option (08 §4.3); TRUE = reference at every Z Setup (owner Q11)
     reference_move: str = "FNL"          # "FNL" | "FPL"
     ready_timeout_s: float = 300.0
     wait_timeout_s: float = 300.0        # General wait for movement to stop (08 §8, Z19)
@@ -2196,7 +2196,7 @@ range"}`; `Cam Autofocus` → ACK `{TRUE, 9507, source_contains "Cam Autofocus"}
 | 5 | Image serialisation (02 §8.5, Q6) | `[image] codec`, `nivision_library` | `provisional` |
 | 6 | HM `Max Framerate` constant never loaded (05 §3.1, 09 D5) | `[camera] hm_max_framerate` | 0.0 |
 | 7 | Saved default of `BulbStatusInverter` (05 §9.1, Q41.3) | `[camera] bulb_status_inverter` | FALSE |
-| 8 | Hidden PI set-up options `Check FRF?` / reference move (08 §4.3, Q11) | `[stage] always_reference`, `reference_move` | FALSE (reference only when not referenced), `FNL` |
+| 8 | Hidden PI set-up options `Check FRF?` / reference move (08 §4.3, Q11) | `[stage] always_reference`, `reference_move` | TRUE (reference at every `Z Setup`, owner answer Q11), `FNL` |
 | 9 | Start-up macro check purpose (01 §3.4.3, A17, Q41.2) | `[stage] startup_macro_check` | FALSE (skip) |
 | 10 | 300 s motion/ready timeouts (08 §8, Z19) | `[stage] wait_timeout_s`, `ready_timeout_s` | 300 |
 | 11 | End-of-reference detection `#5` vs `#7` (08 Z13) | `[stage] do_reference_waits_ready` | TRUE (`#7`, then `#5`) |
@@ -2295,7 +2295,7 @@ hm_max_framerate = 0
 bulb_status_inverter = FALSE
 
 [stage]
-always_reference = FALSE
+always_reference = TRUE
 reference_move = FNL
 ready_timeout_s = 300
 wait_timeout_s = 300

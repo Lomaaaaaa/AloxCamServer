@@ -36,7 +36,7 @@ def set_up(make_sim: MakeSim, make_controller: MakeController, **stage: Any) -> 
 def test_setup_sequence_references_an_unreferenced_axis(make_sim: MakeSim, make_controller: MakeController,
                                                         fake_time: FakeTime) -> None:
     sim = make_sim(stage_reference_s=0.2)
-    ctl = make_controller(sim)
+    ctl = make_controller(sim, always_reference=False)      # "Check FRF?" branch: FRF? decides
     ctl.setup(SETTINGS)
     assert ctl.session == ZSession(system=1, axes=("1",), identity=IDENTITY, serial_number="0000000001")
     frames = sim.frames
@@ -52,8 +52,14 @@ def test_setup_sequence_references_an_unreferenced_axis(make_sim: MakeSim, make_
 
 def test_setup_skips_referencing_a_referenced_axis(make_sim: MakeSim, make_controller: MakeController) -> None:
     sim = make_sim(stage_initially_referenced=True)
-    make_controller(sim).setup(SETTINGS)
+    make_controller(sim, always_reference=False).setup(SETTINGS)
     assert "FNL 1" not in sim.frames and "#7" not in sim.frames
+
+
+def test_setup_references_a_referenced_axis_by_default(make_sim: MakeSim, make_controller: MakeController) -> None:
+    sim = make_sim(stage_initially_referenced=True)
+    make_controller(sim).setup(SETTINGS)                     # default always_reference = TRUE (owner Q11)
+    assert "FNL 1" in sim.frames and "FRF? 1" not in sim.frames[:sim.frames.index("FNL 1")]
 
 
 @pytest.mark.parametrize(("move", "frame"), [("FNL", "FNL 1"), ("FPL", "FPL 1"), ("fpl", "FPL 1"), ("XYZ", "FNL 1")])

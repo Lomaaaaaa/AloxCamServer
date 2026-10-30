@@ -145,3 +145,90 @@ open. Later work packages must follow them. Each package adds its own section.
 - **Tests:** path tests clear `ALOX_DRIVE_C`, `ALOX_DRIVE_D` and `ALOX_EXE_DIR` and skip the drive-mapping cases on win32. The
   unwritable-folder test puts a file where `logs/` should be, so it also works when tests run as root. The five owner INI
   files are byte-exact copies in `tests/config/data/real/`.
+
+## WP5 (Z stage)
+
+### Owner answer applied after the merge
+
+- **`[stage] always_reference` now defaults to TRUE** (`settings.StageOptions`, the `alox_camera_server.ini` template, design §6
+  row 8 and Appendix A). The owner wants the axis referenced at every `Z Setup` (Q11). The implicit re-initialisation inside
+  `Z Move …` uses the same set-up, so it also re-references, as in LabVIEW.
+
+### Deviations from the design
+
+1. **`stage_dh_macro_s` ≤ 0 means `DH` runs forever.** That matches the owner's `DH`, a permanent daemon that restarts itself.
+   A value > 0 makes `DH` end that long after it starts.
+2. **`DH` runs from power-up** (`SimStage(options, *, clock=…, dh_running=True)`).
+3. **The GCS error-text table has three extra codes** with PI's texts: −4, −6 and 20 ("Macro not found").
+4. **`setup()` translates an error from any of steps 1–18,** not only the final `ERR?`, because LabVIEW's `GCSTranslateError`
+   receives the whole error chain. The error of the "Set Normal Speed" `VEL` comes after that step and is not translated.
+
+### Wiring (for WP4/WP7)
+
+- `ZContext.from_base(base, *, stage, stage_options)` builds the Z context for `RuntimeParts.make_z_context`. `Z_HANDLERS` is
+  read-only and holds the 19 Z commands plus `Exit`.
+- `app.build_runtime`:
+  - create `SimStage(config.simulation)`, then `ZController(sim, config.stage)` with the default `sleep` and `monotonic`;
+  - `abort_waits = controller.cancel_waits`;
+  - closing the hardware calls `controller.close()`.
+- With the default `time.sleep`, `ZController` sleeps on an interruptible wait, so `cancel_waits()` cuts long waits short. An
+  injected `sleep` (tests) is called as is.
+
+### Behaviour details
+
+- **Shutdown abort:** after `cancel_waits()`, every wait and every later `setup()` raises
+  `StageError(9510, "<what>: aborted by server shutdown")`. `<what>` is "Wait for axes to stop", "Wait for controller ready" or
+  "Z Setup". A cancelled wait skips its additional wait (LabVIEW "Stopped").
+- **Timeout texts:** −7 `"Wait for axes to stop.vi: Timeout."` and −7 `"Wait for controller ready: Timeout."`.
+- **Not connected:** −4 `"<CMD>: not connected"`. For example `Z Cleanup` gives `"RMC?: not connected"` and `Z Wait End Move`
+  without a link gives `"#5: not connected"`.
+- **Re-initialisation info line:** `events.info(err, "Z Stage", "Move Absolute: Z Reference resetted")`, where `err` is the
+  re-initialisation result (code 0 when it worked).
+- **`Z Do Reference`:** a label starting with `#` (lenient decoding of an unknown code) runs FNL with a WARNING. Any other label
+  except `"FRF"` runs FNL silently.
+- **Zero polling:** `Z Wait End Move` with negative times uses 0 ms, and a 0 ms poll loops without sleeping, as LabVIEW does.
+  Tests with a fake clock must advance time themselves.
+- **With `implicit_z_reinit` = FALSE,** a failed reference check also makes `Z Move Absolute` test 0.0 against the range
+  (08 §13.4 sketch). Error 9405 still replaces the error.
+- `check_axis_reference` holds the controller lock for the whole check and re-initialisation.
+- The Z handlers read `state.z` once per message and use that copy throughout.
+
+### Simulator (`SimStage`)
+
+- Controller state (position, reference, servo, velocity, joystick, macros, pending error) survives `Z Cleanup` and a later
+  `Z Setup`.
+- Only the last controller error is kept; `ERR?` reads and clears it.
+- `MVR` adds to the last commanded target, and numbers sent pass through the 4-decimal format.
+- FNL, FPL and FRF take `stage_reference_s`. Meanwhile the axis is unreferenced and `#7` reports busy.
+- The starting velocity is 10 mm/s.
+- **Test hooks:**
+  - `frames` (GCS frames sent, capped at 4096) and `clear_frames()`;
+  - `trigger_home()` simulates digital input 1, so a running `DH` starts `HOME` (joystick off, move to 0, then `DH` again);
+  - `power_cycle()` loses the reference, useful for testing the implicit re-initialisation;
+  - read-only `referenced`, `running_macro`, `velocity`, `joystick_enabled` and `port`.
+- **Other public names:**
+  - `zstage/sim.py`: `INJECTABLE_METHODS` and the owner's macro texts `DH_MACRO_TEXT` / `HOME_MACRO_TEXT`;
+  - `zstage/backend.py`: `format_gcs_float` and `GCS_FLOAT_FORMAT`;
+  - `ZController.options`, `controller.KNOWN_MACROS`, `controller.DH_MACRO`;
+  - `handlers.NOT_REFERENCED_TEXT` and `REFERENCE_RESET_INFO`.
+
+### For phase 2 (real `pipython` backend)
+
+- **New module `zstage/pi_backend.py`:** a `StageBackend` on `PISerial` + `GCSCommands`, with `errcheck = False` and
+  `floatformat = '.4f'`. Each method maps onto a `pipython` call (08 §13.2):
+  - `stp(axis)` sends `"STP 1"`; `qerr` reads `"ERR?"`, and an empty answer gives 100 "No answer on ERR?";
+  - `is_moving` uses `IsMoving()`; `is_controller_ready` uses `IsControllerReady()`, where `ValueError` gives 100
+    "#7 Unknown reply"; `stop_all` uses `StopAll(noraise=True)`;
+  - `translate_error` uses `GCSError.translate_error` with the trailing code stripped;
+  - `qidn` and `qrmc` strip the final LF;
+  - `GCSError`, `OSError` and `serial.SerialException` are wrapped as `StageError` (−6 when opening, −7 on timeout).
+- **Dependencies:** add `pyserial`, and `pipython` if used.
+- **Purge:** on real hardware the `XXX` of the purge itself latches error 2, so `connect_rs232` would always return 2 and log the
+  Z22 warning. Either read `ERR?` before `XXX`, or treat 2 as expected.
+- **Ports:** `[stage] port_map` is already applied in `setup()` (for example `COM2` → `/dev/ttyUSB0`).
+- **Still to check on the hardware** (08 §13.6, questionnaire Q35):
+  - whether the C-663 accepts `STP 1`;
+  - `MVR` semantics;
+  - where `Z Get Serial` takes its serial number from;
+  - `#7` while referencing;
+  - whether a macro aborts on error and how `MAC START` chains macros.
