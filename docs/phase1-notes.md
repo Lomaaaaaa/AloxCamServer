@@ -333,3 +333,105 @@ and logs its own exceptions. `ServerRuntime.started` is public.
 - `python -m aloxcam` in subprocess tests needs `PYTHONPATH=src`, because the package is not installed.
 - `tests/server/wp4_helpers.py` has reusable doubles: `Fakes`, `make_parts`, `command_frame` and `read_reply`.
 - **Phase 4:** pass the focus controller as `RuntimeParts.camera_background`.
+
+## WP6 (cameras and imaging)
+
+### Deviations from the design
+
+1. **`Cam Autofocus Run` / `Cam Refocus Run` have no handler.** As the design says, `CAMERA_HANDLERS` excludes them; they are
+   never routed and their reply kind is NONE. `CAMERA_HANDLERS` matches the camera entries of `CASES` exactly (25 commands).
+2. **Optional wall clocks:** `GetImageStateMachine(..., now=time.time)` and `make_sessions(..., now=None)` take a clock for the
+   custom-data `timestamp`, so tests are deterministic.
+3. **`SimCameraBackend.devices` is a read-only property.** It keeps closed devices (the last one per name), so tests can check
+   `.closed` after shutdown.
+4. **`PngUnsupported(message, *, color_type, bit_depth)`** is the constructor; `.color_type` and `.bit_depth` are attributes.
+5. **New public names:**
+   - `backend.FrameRing`: a reusable buffer ring with cumulative numbering and the three Get Image2 modes, for the phase 3
+     backends;
+   - `attributes`: `PROPERTY_NODE`, the line and user-output attribute constants, `FRAMERATE_LOWER_LIMIT`,
+     `BUFFER_COUNT_ATTRIBUTES`;
+   - `pipeline.SimulationError`;
+   - `sim`: the `SIM_*` attribute names, `frame_number_of`, and test hooks (`attribute_value`, `fail_method`, `closed`,
+     `configured`, `continuous`, `packet_size`, `frames_acquired`);
+   - `handlers`: `NOT_IMPLEMENTED_TEXT` and `CameraContext.from_base(base, *, backend, sessions, forward_to_z, camera_options,
+     **extra)`;
+   - `png.PNG_SIGNATURE`.
+
+### Behaviour details
+
+- **Simulated cameras** are opened exclusively by name; opening a name that is already open fails with 9502 "already open".
+  `Cam Setup` closes that camera's previous device first, so a second set-up works. HM and LM must use different names.
+- **Simulated attribute ranges** (out of range or wrong value type gives 9502):
+  - exposure [1, 1e7], default 10000;
+  - gain [0, 48];
+  - frame rate [0.1, `max_frame_rate`], starting at `[simulation] frame_rate`; the HM `Cam Set Exposure` raises it to
+    `max_frame_rate`.
+- **Simulated frames:** a horizontal gradient scaled by exposure/10000. The frame number is written big-endian into the low
+  byte of the first 4 pixels of row 0, and `frame_number_of` reads it back.
+- **"Invalid camera session":** any attribute access on a camera that is not open gives the source
+  `"IMAQdx Property Node: invalid camera session"`. Streaming on a cleaned-up camera gives −1074360316 with that text, followed
+  by `CameraAttributes::DeviceControl::DeviceTemperature`.
+- **`Cam Cleanup`:** with no device it replies −1074360316. With a device, Close runs even if Unconfigure failed, and the errors
+  are merged. It also resets the session's focus fields.
+- **Unknown `Camera Type` label** (only possible with an enum override that adds items): the handler raises `CameraError(91)`,
+  which goes through the worker's exception path.
+- **Flat field:**
+  - with `flatfield_check_on_set`, a missing FFC or DFC gives `"<path>: flat-field file not found"`; an empty path counts as
+    missing;
+  - a shape or dtype mismatch with the frame gives 9509;
+  - a non-finite correction factor gives `{TRUE, 1, "Correction Factor: invalid value"}` and leaves the settings unchanged.
+- **HM frame rate** with `exposure_sets_max_framerate` = FALSE: if the MaxDBL read fails and `hm_max_framerate` ≤ 0, there is no
+  upper bound. In the LabVIEW mode, a failed MaxDBL read writes 0.0, as LabVIEW would.
+- **Simulation:**
+  - a failed PNG read still advances the index, because LabVIEW computes `Index Out` before the read;
+  - an empty or unmappable folder gives 9501 `"List Folder: simulation folder … is not available"`.
+- **Stream timeout:** `acquisition_timeout_ms` is converted to U32, so a negative value never times out.
+- **`Cam Get Image`** also updates `src_image` (LabVIEW flips in place), and blocks up to 5 s if no new frame arrives.
+- **`Cam Software Trigger`:** cleared errors are logged at WARNING in the diagnostic log.
+- **`FrameRing`:** every Get Image2 mode moves the "last returned" cursor used by `Next` and `Last New`. The cursor is shared by
+  streaming, `Cam Get Image` and (in phase 4) focus grabs.
+- **PNG reader:** the Average and Paeth filters are decoded byte by byte. A full 2448 × 2048 frame takes about 0.8 s (Average)
+  or 1.7 s (Paeth) and blocks the camera worker meanwhile. Small fixtures, or files written by `write_png`, are fast.
+
+### Wiring (WP4 `build_runtime`)
+
+- backend `SimCameraBackend(config.simulation)`;
+- sessions `make_sessions(compat=…, tick=…, decimal_separator=config.logging.decimal_separator)`;
+- context `CameraContext.from_base(base, backend=…, sessions=…, forward_to_z=fwd, camera_options=config.camera,
+  decimal_separator=…)`;
+- `close_hardware`: `close_cameras(sessions)` then `backend.close()`;
+- codec `make_codec(config.image)`; `nivision` always logs a WARNING (stub).
+
+### For WP7 (integration)
+
+- With `request_buffer_zero` = TRUE (default), the first streamed images after `Cam Start` carry buffer `"0"`.
+- FFC/DFC fixtures must be 640 × 480 U8 like the simulated frames, and F must differ from D, otherwise the corrected image is
+  black.
+
+### For phase 3 (real camera backends)
+
+- One `CameraDevice` per SDK (IDS peak, VmbPy or Harvesters), each reusing `FrameRing` with its own grab thread.
+- A new `[camera]` configuration section (WP3) for:
+  - mapping NI MAX camera names to devices (serial number or user-defined name);
+  - translating IMAQdx attribute paths to GenICam feature names. The INI defaults `CameraAttributes::Exposure::Value` and
+    `Gain::Value` need an explicit mapping.
+- Device behaviour:
+  - I/O-line selectors written as integer enumeration values;
+  - `TriggerSoftware` executed as a command, `MaxDBL` read as the feature maximum, `PacketSize` mapped to `GevSCPSPacketSize`
+    on GigE;
+  - one-shot (Sequence) mode: N frames, then the counter stops while acquisition stays "in progress";
+  - vendor exceptions mapped to `CameraError` (9502 when there is no IMAQdx equivalent).
+- To confirm on the real driver: `LastBufferNumber` before the first frame, the overwrite mode, and `Last New`.
+- The real NI Vision codec (`imaging/nivision.py`) replacing the stub.
+- Validation of the flat-field formula against NI output. Correction images are PNG only for now.
+- Possibly a faster PNG decoder, if full-size Paeth-filtered PNGs are used in simulation.
+
+### For phase 4 (focus jobs)
+
+- Replace the `Cam Autofocus` / `Cam Refocus` stub entries in `CAMERA_HANDLERS` with real start handlers (06 §9.5). They apply
+  `focus_reject_concurrent_start`, `focus_validate_params` and `af_check_z_limits`, and their ACK is not forced.
+- Use `CameraContext.focus` (the focus controller) and `CameraContext.stage`. WP4 passes the background stepper to the worker.
+- `session.focus` holds `af_state` / `rf_state` (plain strings), `last_focus_data`, `focus_progress` and `last_error`; `Cam Get
+  Autofocus Data` / `Progress` already read them.
+- Focus grabs use `device.get_next()`, then `flip_image` and `flat_field_correct`.
+- `Cam Cleanup` resets the focus fields, so a running job for that camera must be aborted first.
