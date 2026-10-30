@@ -435,3 +435,78 @@ and logs its own exceptions. `ServerRuntime.started` is public.
   Autofocus Data` / `Progress` already read them.
 - Focus grabs use `device.get_next()`, then `flip_image` and `flat_field_correct`.
 - `Cam Cleanup` resets the focus fields, so a running job for that camera must be aborted first.
+
+## WP7 (client, replay tool, integration tests)
+
+### Deviations from the design
+
+1. **Tool tests use a fake server on a loopback port**, not a socketpair, because `run_script` and `AloxClient` connect by host
+   and port.
+2. **Additions to the script format:**
+   - `[session] stop_on_fail`, which carries `--stop-on-fail` into `run_script` without changing its signature;
+   - a per-step `timeout_s`;
+   - `expect.connection = "open"`;
+   - an IMAGE `value` is the hex text of the image bytes (`""` means an empty image);
+   - poll conditions `until_eq/ne/ge/gt/le/lt`;
+   - a bare value for single-field payloads (`data = 0.5`);
+   - `$$` gives a literal `$`; only `${name}` is substituted.
+3. **Replies to commands whose reply kind is NONE are decoded as ACK.** This happens with `reply_unknown_commands` on, when the
+   router answers the unrouted `Cam Autofocus Run` / `Cam Refocus Run` with a forced 9506 ACK. Scripts may expect
+   `reply = "ACK"` for those commands.
+4. **API additions:**
+   - `StepResult` gains `step` (first field) and `notifier`;
+   - `RunReport` gains `failures` and `result(i)`;
+   - `Script` gains `commands`, `vars` and `path`;
+   - the tool exports `mask_reply` and `ScriptError`;
+   - `AloxClient` gains `build_command_frame()`, `new_notifier()`, `reply_count`, `received_notifiers()`, `unclaimed()` and
+     `end_reason`, and `__enter__` connects only if not yet connected.
+5. **`tools/replay_client.py` adds `<repo>/src` to `sys.path`** when `aloxcam` is not importable, so the tool runs from a checkout
+   without installing.
+6. **Extra tests:** `test_record_and_compare_two_servers`, `test_production_alox_ini` and
+   `test_check_config_production_alox_ini`.
+
+### Script semantics
+
+- **Default `reply` when a step omits it:** the command's reply kind (`none` for commands without a reply); `any` for `code` and
+  `raw_hex` steps; `none` for heartbeat frames.
+  - `any` waits `timeout_s` for commands that have a reply, and accepts either a reply or no reply.
+  - `error` is checked only when the script gives it.
+- **Notifiers:** the default is `replay-<n>`, with the same 1-based index as the output. Poll retries use `replay-<n>-<try>`.
+  Script notifiers are encoded cp1252, and records store them as latin-1 text.
+- **`raw_hex` steps:** if the bytes form a command frame whose notifier decodes (including an envelope the server answers with
+  error 116), the reply is matched by notifier. Otherwise `none` means no reply frame at all within `no_reply_wait_s`, apart
+  from replies to outstanding `wait = false` steps.
+- **`await`** must name an earlier `wait = false` step (checked at load). A `wait = false` step cannot have `poll` or `expect`.
+- **Records:** one record per step, including pause and await steps.
+- **Compare:** records are paired by step number. A different `command`, a step present in one file only, or a reply present in
+  one file only is reported. The `image` mask clears the image string and the request, receiving, pre- and post-flattening
+  timestamps, but keeps the client's sending timestamp. Errors are never masked.
+
+### Integration tests
+
+- **Fixture:** `start_server(compat=…, alox_ini=…, name=…)` plus a `server` fixture.
+  - The `SimStage` instances are captured by monkeypatching `aloxcam.zstage.sim.SimStage` with a recording subclass, because
+    `build_runtime` imports it inside the function.
+  - The camera devices are reached through `runtime.camera_worker.ctx.backend`.
+  - `[server] shutdown_timeout_s = 10`.
+- **Production `alox.ini`** is used by `test_pipelined`, `test_production_alox_ini`, both subprocess CLI tests and
+  `test_check_config_production_alox_ini`, with the port overridden to 0. The tests pin these facts:
+  - `Cam Get Led` reads back the inverse of `Cam Set Led`, because `lightStatusInverter_BOOL = FALSE`. This is LabVIEW
+    behaviour (05 §9.3), not a bug.
+  - The camera names are swapped (High Mag "LowMagg", Low Mag "HighMag").
+  - The Low Mag minimum exposure is 176 and the Z speed is 5 mm/s.
+  - Z max is 90 mm but the simulated stage stops at 25 mm, so moves between 25 and 90 pass the software range check and are
+    then refused by the simulator with error 7.
+- Only `test_all_commands_default_compat` (about 2.7 s) carries the `slow` marker. `test_reconnect` takes about 1.8 s because
+  of a 1.5 s Z wait.
+
+### Phase 1 exit criteria (design Appendix B)
+
+1. **Every captured request decodes:** waiting for the network capture (Q4). The tooling is ready: `raw_hex` steps,
+   `--templates` for captured variant headers, and `--enums` / `--settings-ini` for the enum tables.
+2. **Deterministic replies are byte-identical except tick fields:** the mechanism is shown Python against Python
+   (`test_record_and_compare_two_servers`). The run against the LabVIEW server must be done on the lab PC:
+   `--record` against LabVIEW, then `--compare … --mask tick` against Python.
+3. **The client runs with simulated devices:** shown with our client and the production `alox.ini` (subprocess smoke test,
+   all 46 commands, Exit and SIGINT shutdown). The real LabVIEW client cannot decode image replies until the NI image codec
+   arrives in phase 3.

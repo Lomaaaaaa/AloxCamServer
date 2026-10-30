@@ -77,6 +77,29 @@ python -m aloxcam --setup-ini /tmp/alox/alox_setup.ini --simulate --port 5030
 Without `--setup-ini`, `alox_setup.ini` is read from the current folder (or `$ALOX_EXE_DIR`); when it is missing, the
 LabVIEW default folders `D:\alox\…` apply, which off Windows need `ALOX_DRIVE_D=<folder>` or `--settings-dir`.
 
+### On Windows (the target platform)
+
+In a Command Prompt, from the repository folder. `py` is the Python launcher installed with Python 3.11+.
+
+```bat
+py -3 -m venv .venv
+.venv\Scripts\pip install -e ".[dev]"
+.venv\Scripts\python -m pytest
+```
+
+To run the simulated server against the real ALOX folders, use the existing `alox_setup.ini` (or a copy). It only reads
+`alox.ini` and never writes to it. Choose another port than 503 while the LabVIEW server is running:
+
+```bat
+.venv\Scripts\python -m aloxcam --setup-ini D:\alox\alox_setup.ini --check-config
+.venv\Scripts\python -m aloxcam --setup-ini D:\alox\alox_setup.ini --simulate --port 5030
+.venv\Scripts\python tools\replay_client.py tools\scripts\smoke.toml --port 5030
+```
+
+The simulated server writes its event logs to `<vision>\logs`, next to the LabVIEW ones. Their file names are the same
+(`<yymmdd>_camera_events.log`), so point `alox_setup.ini` at a separate test folder if you don't want both servers writing
+to the same daily files.
+
 ## Checking the configuration
 
 ```sh
