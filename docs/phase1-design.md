@@ -30,6 +30,10 @@ The owner's answers ([answers/owner-answers.md](answers/owner-answers.md)) super
 - **Configuration fixtures**: five real `alox.ini` files are in `docs/answers/ini/`. WP3 copies them to `tests/config/data/real/`
   and tests against them (§4.2).
 - **Q16–Q28** use the recommended defaults (owner-answers §7). They match the `[compat]` defaults of this design.
+- **Network capture** ([answers/capture-analysis.md](answers/capture-analysis.md)), received after the implementation:
+  - `Camera Type` is a **U32** enum on the wire (`camera_type` `size = 4`);
+  - LabVIEW **sends** error ACKs, so `[compat] send_error_replies` defaults to **TRUE**;
+  - all 5,158 captured requests decode, and all 4,306 captured non-image replies re-encode byte for byte.
 
 ## 0. Conventions for implementers
 
@@ -366,7 +370,7 @@ class Folders:                           # 09 §3
 
 @dataclass(frozen=True)
 class CompatSwitches:                    # 10 §6 — the complete registry; defaults = LabVIEW-observable behaviour
-    send_error_replies: bool = False
+    send_error_replies: bool = True     # LabVIEW sends error ACKs (network capture, capture-analysis.md)
     reply_unknown_commands: bool = False
     listen_address: str = "127.0.0.1"
     inbound_pause_ms: int = 0
@@ -2247,7 +2251,7 @@ error_history = 1000
 temperature_history = 10000
 
 [compat]
-send_error_replies = FALSE
+send_error_replies = TRUE
 reply_unknown_commands = FALSE
 listen_address = 127.0.0.1
 inbound_pause_ms = 0

@@ -181,7 +181,7 @@ chapter, and the decisions are collected in the questionnaire (part D, Q16–Q28
 
 | Switch (proposed) | LabVIEW behaviour | Default | Fixed behaviour |
 |---|---|---|---|
-| `send_error_replies` | An error acknowledgement is probably never sent (inferred from [Doc6 p.437]; confirm by capture, Q4/Q17), so the client times out ([02](02-tcp-protocol.md) §8.4) | FALSE (LabVIEW) | TRUE: always reply with the error cluster |
+| `send_error_replies` | LabVIEW **sends** error acknowledgements: the network capture shows a `Cam Set Led` error reaching the client ([answers/capture-analysis.md](answers/capture-analysis.md) §3.2). This corrects the earlier inference from [Doc6 p.437] ([02](02-tcp-protocol.md) §8.4). | TRUE (LabVIEW) | FALSE only to suppress error ACKs |
 | `reply_unknown_commands` | Unknown or unhandled commands get no reply ([02](02-tcp-protocol.md) §11.3, [03](03-command-reference.md) C2) | FALSE (LabVIEW) | TRUE: reply with an "unknown command" error |
 | `listen_address` | Listens on `127.0.0.1` only ([02](02-tcp-protocol.md) §3) | `127.0.0.1` (LabVIEW) | Unchanged. Another address only if remote clients are needed: it exposes an unauthenticated control port (Q36) |
 | `inbound_pause_ms` | ≈ 50 ms pause after each inbound frame ([02](02-tcp-protocol.md) §4.6) | 0 (carve-out (b) below) | 0 |

@@ -510,3 +510,19 @@ and logs its own exceptions. `ServerRuntime.started` is public.
 3. **The client runs with simulated devices:** shown with our client and the production `alox.ini` (subprocess smoke test,
    all 46 commands, Exit and SIGINT shutdown). The real LabVIEW client cannot decode image replies until the NI image codec
    arrives in phase 3.
+
+## After the network capture
+
+The capture of the real client and the LabVIEW server ([answers/capture-analysis.md](answers/capture-analysis.md)) led to two
+corrections:
+
+1. **`Camera Type` is a U32 enum** (type code 0x17), so `wire_enums.toml` sets `camera_type` to `size = 4`.
+   - The spec examples of 02 §7.5 and 04 §5.7 assume U16. The tests that check them (`tests/wire/test_messages.py`,
+     `test_lv_flatten.py`, `test_lv_variant.py`) load `WireEnums.load(sizes={"camera_type": 2})`.
+   - `PayloadVector.code_values` now writes each code at its enum's width.
+   - The real width is covered by `tests/wire/test_capture_vectors.py`, which uses real LabVIEW frames from
+     `tests/golden/capture_vectors.json`.
+2. **`[compat] send_error_replies` defaults to TRUE**, because LabVIEW sends error ACKs.
+   - The tests of the suppression mechanism request `send_error_replies=False` explicitly.
+   - `phase1_all_commands.toml` now expects the 9405 and −4 error ACKs.
+   - `test_unknown_commands_only` turns error replies off to test `reply_unknown_commands` alone.

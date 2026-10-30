@@ -53,8 +53,9 @@ Source: [`enums/camera_command_1.png`](enums/camera_command_1.png), [`enums/came
 | `typedef_ext_camera_autofocus_state.ctl` (strict, "AF State") | 0 Start, 1 Goto Z Pos, 2 Wait Started, 3 Measure, 4 Finished, 5 Error | [`enums/autofocus_state.png`](enums/autofocus_state.png) |
 | `alox_typedef_refocus_method.ctl` (strict) | 0 Fin, 1 Oxyd | [`enums/refocus_method.png`](enums/refocus_method.png) |
 
-Still unknown: the Z Do Reference enum, the representation of the enums other than `Camera Command` (U16 assumed), and the
-Camera Plug Type ring/enum values. The INI uses the strings `"USB"` and `"GiGe"`.
+**Representation:** the network capture shows that `Camera Type` is a **U32** enum, not U16
+([capture-analysis.md](capture-analysis.md) §3.1). Still unknown: the Z Do Reference enum, the representation of the autofocus and
+refocus enums (U16 assumed; possibly U32 like `Camera Type`), and the Camera Plug Type ring/enum values. The INI uses the strings `"USB"` and `"GiGe"`.
 
 ## 2. Cluster order
 
@@ -152,7 +153,7 @@ The owner's instruction is "do what you must". The recommended defaults of the q
 | Q | Decision |
 |---|---|
 | Q16 | Reproduce (switch `exposure_sets_max_framerate` = TRUE) |
-| Q17 | Reproduce until a capture confirms (switch `send_error_replies` = FALSE) |
+| Q17 | Settled by the network capture: LabVIEW **does** send error replies, so `send_error_replies` = TRUE ([capture-analysis.md](capture-analysis.md) §3.2) |
 | Q18 | Fix (append to the log, correct HI/LO labels) |
 | Q19 | Keep "Fin" only |
 | Q20 | Fix (restore only values actually read) |
