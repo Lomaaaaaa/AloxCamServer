@@ -161,10 +161,24 @@ markers = ["integration: end-to-end tests with a live server on loopback", "slow
 - **Routing** is computed once from the enum table (03 §3.5, 04 T2); the two internal `… Run` commands are never routed (03 C16).
 - **Undecodable payloads** of a known command are not executed: the worker replies with the command's reply kind carrying
   `{TRUE, 91, "Variant To Data in alox_camera_server.vi"}` + the command's suffix (camera commands), subject to `send_error_replies`
-  (10 §6 carve-out (a), 04 T1). Undecodable envelopes are logged and dropped (02 §7.6).
+  (10 §6 carve-out (a), 04 T1). **Undecodable envelopes** (02 §7.6, 01 A20, 04 T8): when the command code and the notifier were
+  decoded and the code is routed to a known command, the request is queued with `decode_error = {TRUE, 116, "Unflatten From String
+  in alox_camera_server.vi"}` and timestamps 0 (same path as an undecodable payload); otherwise the frame is logged (ERROR, hex
+  excerpt) and dropped.
 - **Shutdown** (01 §7, A10 fix): `Exit` → camera worker forwards `Exit` to the Z worker and stops → runtime closes the link (later
-  replies dropped, as LabVIEW loses them), stops the listener, waits for the Z worker, closes cameras and stage. Ctrl+C/SIGTERM post an
-  internal `Exit` to the camera worker (same chain).
+  replies dropped, as LabVIEW loses them), stops the listener, waits for the Z worker (a set-up/reference/wait still running after
+  `shutdown_timeout_s` is cancelled, §3.4.6), closes cameras and stage. Ctrl+C/SIGTERM post an internal `Exit` to the camera worker
+  (same chain).
+- **Thread contract** (normative for every package):
+  - *Confinement.* `CameraSession`, `CameraDevice` calls and `ImageCodec.flatten`: camera worker only (the shutdown thread may use
+    them once the camera worker has stopped). `Router`, `TcpServer`: TCP thread only. `StageBackend`: only through `ZController`.
+  - *Locks.* The `ClientLink` send lock, `ServerState.lock`, the `EventLogs` lock and the worker queues are **leaf locks**: while
+    holding one, code never takes another of these locks and never calls a handler, a backend, a `ReplySink` or an `EventSink`
+    (stdlib `logging` is allowed anywhere). The only nesting is `ZController.lock` → `StageBackend` call; `ZController` does not
+    call `ServerState`, `ReplySink` or `EventSink`. Waits (`wait_ready`, `general_wait`) take the lock per exchange, never across a
+    sleep.
+  - *At most one reply per request* (02 §10 rule 3): every `ReplySink` method sets `req.replied = True`, also when the frame is
+    suppressed or dropped; nothing replies to a request whose `replied` is already TRUE (the worker's exception path checks it).
 
 ---
 
@@ -205,6 +219,7 @@ class Code(IntEnum):
     NOT_IMPLEMENTED_IN_PHASE = 9507     # Phase-1 stubs (Cam Autofocus, Cam Refocus)
     IMAGE_CODEC_UNAVAILABLE = 9508      # ImageCodec cannot flatten (NI Vision stub)
     VISION_OPERATION = 9509             # NI Vision operation failed, NI code unknown (flat-field size mismatch…)
+    ABORTED_BY_SHUTDOWN = 9510          # Z set-up/reference/wait cancelled by the shutdown chain (reply dropped anyway)
     IMAQDX_INVALID_SESSION = -1074360316
 
 TEXT: Mapping[int, str]   # fixed source texts: 9405 "Z move out of range", 9009 "get image error (timeout)",
@@ -526,6 +541,7 @@ class Request:                   # internal form of Camera Queue Data (04 §4.1)
     conn_id: int = 0             # ClientLink generation; 0 = internal (never replied)
     internal: bool = False
     requeue_count: int = 0
+    replied: bool = False        # set by every ReplySink method (at most one reply per request, §2)
     @classmethod
     def make_internal(cls, command: str, spec: CommandSpec | None) -> "Request": ...
 
@@ -536,14 +552,17 @@ class Outcome:
 CONTINUE = Outcome(); STOP = Outcome(stop=True); REQUEUE = Outcome(requeue=True)
 
 class ReplySink(Protocol):       # implemented by server.reply.Replier and testing.RecordingReplies; thread-safe
-    def ack(self, req: Request, err: ErrorCluster) -> ErrorCluster: ...            # returns err (ACK VI error out)
+    # Every method sets req.replied = True (also when suppressed/dropped). force=True sends an error ACK even when
+    # send_error_replies = FALSE: used ONLY for 9506 (reply_unknown_commands) and the Phase-1 stubs 9507 (§7).
+    def ack(self, req: Request, err: ErrorCluster, *, force: bool = False) -> ErrorCluster: ...  # returns err (ACK VI error out)
     def string(self, req: Request, value: str, err: ErrorCluster) -> ErrorCluster: ...   # typed: return NO_ERROR
     def boolean(self, req: Request, value: bool, err: ErrorCluster) -> ErrorCluster: ...
     def dbl(self, req: Request, value: float, err: ErrorCluster) -> ErrorCluster: ...
     def u32(self, req: Request, value: int, err: ErrorCluster) -> ErrorCluster: ...
     def dbl_2d(self, req: Request, value: np.ndarray, err: ErrorCluster) -> ErrorCluster: ...
     def image(self, req: Request, image: ImageData | None, err: ErrorCluster) -> ErrorCluster: ...
-    def error_reply(self, req: Request, kind: ReplyKind, err: ErrorCluster) -> ErrorCluster: ...  # kind default value + err
+    def error_reply(self, req: Request, kind: ReplyKind, err: ErrorCluster, *,
+                    force: bool = False) -> ErrorCluster: ...   # kind default value + err; kind NONE → nothing sent
 
 class EventSink(Protocol):       # implemented by eventlog.EventLogs and testing.RecordingEvents; thread-safe
     def error(self, err: ErrorCluster, server_type: str, extra: str, *, command: str | None = "Get Heartbeat",
@@ -568,11 +587,11 @@ class WorkerContext:             # base context; camera/Z contexts subclass it (
     tick: TickFn
 
 # Finish helpers (03 §4.5). Defaults come from req.spec. All set ctx.state.error_out to the logged error.
-def send_reply(ctx: WorkerContext, req: Request, value: Any, err: ErrorCluster) -> ErrorCluster: ...
-    # dispatch on req.spec.reply; NONE → no reply, returns err
+def send_reply(ctx: WorkerContext, req: Request, value: Any, err: ErrorCluster, *, force: bool = False) -> ErrorCluster: ...
+    # dispatch on req.spec.reply; NONE → no reply, returns err; force is passed to ack()
 def finish_camera(ctx: WorkerContext, req: Request, value: Any, err: ErrorCluster, *, camera_type: str | None,
                   suffix: str | None = None, extra: str | None = None,
-                  order: FinishOrder | None = None) -> ErrorCluster: ...
+                  order: FinishOrder | None = None, force: bool = False) -> ErrorCluster: ...
     # A: e = decorate(err, suffix); events.error(e, "Camera", extra, command=req.command, camera_type=…); send_reply(e)
     # RAW_FIRST: out = send_reply(err); e = decorate(out, suffix); events.error(e, …)
     # camera_type None → HIGH_MAG (LabVIEW unwired input); pass the real type whenever known (09 D15 fix)
@@ -582,6 +601,7 @@ def finish_z(ctx: WorkerContext, req: Request, value: Any, err: ErrorCluster, *,
 def reject_undecodable(ctx: WorkerContext, req: Request) -> None: ...
     # used by Worker for req.decode_error (value = kind default): camera → finish_camera with req.spec.order (CUSTOM → A),
     # suffix = spec.suffix or "" and the camera type HIGH_MAG (unknown); Z → finish_z. Reply kind NONE → log only.
+    # extra = spec.extra or spec.name. Never forced (carve-out (a): follows send_error_replies).
 def reply_default_value(kind: ReplyKind) -> Any: ...      # "", False, 0.0, 0, np.empty((0, 0)), None (image)
 ```
 
@@ -619,7 +639,7 @@ class FixedClock:                         # TickFn
 class SentReply:
     kind: ReplyKind; req: Request; value: Any; err: ErrorCluster; sent: bool   # sent False = suppressed by send_error_replies
 
-class RecordingReplies:                   # ReplySink with the exact return/suppression semantics of server.reply.Replier
+class RecordingReplies:                   # ReplySink with the exact return/suppression/force/`replied` semantics of Replier
     def __init__(self, send_error_replies: bool = False) -> None: ...
     replies: list[SentReply]
 
@@ -631,8 +651,10 @@ class RecordingEvents:                    # EventSink; error() records only stat
     events: list[LoggedEvent]
 
 def make_request(command: str, data: Any = None, *, notifier: bytes = b"N1", conn_id: int = 1,
-                 ts: tuple[int, int, int] = (0, 0, 0), decode_error: ErrorCluster | None = None) -> Request: ...
-    # spec looked up in wire.messages.COMMANDS (lazy import); code from the packaged enum table
+                 ts: tuple[int, int, int] = (0, 0, 0), decode_error: ErrorCluster | None = None,
+                 spec: CommandSpec | None = None, code: int | None = None) -> Request: ...
+    # spec/code given → used as is (WP1's own tests always pass them: no WP2 import); otherwise spec looked up in
+    # wire.messages.COMMANDS and code in the packaged enum table (lazy imports, available from WP2-M2a)
 def make_state(**overrides: Any) -> ServerState: ...      # from AloxSettings() defaults
 def make_worker_context(*, compat: CompatSwitches | None = None, clock: FixedClock | None = None,
                         send_error_replies: bool | None = None) -> WorkerContext: ...
@@ -673,9 +695,10 @@ class Reader:
     def path(self) -> LVPath: ...
 
 class Writer:
-    def __init__(self, *, encoding: str = DEFAULT_ENCODING) -> None: ...
-    # same kinds as Reader; integer writers raise ValueError when out of range; string() accepts str (encoded,
-    # errors="strict" → ValueError) or bytes (written as is); error(ErrorCluster); dbl_2d(array-like 2-D, shape kept);
+    def __init__(self, *, encoding: str = DEFAULT_ENCODING, errors: str = "strict") -> None: ...
+    # same kinds as Reader; integer writers raise ValueError when out of range; string() accepts str (encoded with
+    # `errors`: "strict" → ValueError; the server's outbound path uses "replace", see flatten_reply) or bytes (written as
+    # is); error(ErrorCluster); dbl_2d(array-like 2-D, shape kept);
     # path(LVPath); uint(value, size); raw(bytes). Every method returns self.
     def bytes(self) -> bytes: ...
 
@@ -955,7 +978,7 @@ CASES: Mapping[str, str]                  # label → worker, for every command 
 | `Cam Get Exposure` | camera | `CameraGetExposureData` | STRICT | DBL | A | `Get Exposure` | dyn | 05 §5.3 |
 | `Cam Set Gain` | camera | `CameraGainData` | STRICT | ACK | A | `Set Gain` | dyn | 05 §5.4 |
 | `Cam Get Gain` | camera | `CameraGetGainData` | STRICT | DBL | A | `Get Gain` | dyn | 05 §5.4 |
-| `Cam Stream Next Image` | camera | `CameraStreamData` | STRICT | IMAGE | CUSTOM | (per outcome) | dyn | 05 §6.2 |
+| `Cam Stream Next Image` | camera | `CameraStreamData` | STRICT | IMAGE | CUSTOM | `Get Image Start` (other outcomes: 05 §6.2) | dyn | 05 §6.2 |
 | `Cam Get Image` | camera | `CameraGetImageData` | STRICT | NONE | CUSTOM | — | `Cam Get Image` | 05 §6.5 |
 | `Cam Get Images Array` | camera | — | NOT_READ | NONE | CUSTOM | — | — | 03 §5.17 |
 | `Cam Flip` | camera | `CameraFlipData` | STRICT | ACK | A | `Flip` | `Cam Flip` | 05 §7.2 |
@@ -1019,9 +1042,13 @@ class CommandEnvelope:                    # Camera Queue Data as flattened (02 �
     sending_ts: int
     receiving_ts: int
 
+class EnvelopeError(ProtocolError):       # code 116; raised by decode_envelope
+    code_value: int | None                # command code, when it was decoded (raw int, may exceed the item list)
+    notifier: bytes | None                # notifier name, when it was decoded
 def decode_envelope(payload: bytes, enums: WireEnums) -> CommandEnvelope: ...
-    # 02 §7.4: code (camera_command size), notifier, variant header walk, data = up to len-16,
-    # attribute count must be 0, then 3 × U32. Every truncation raises ProtocolError.
+    # 02 §7.4: code (camera_command size, raw int: never mapped to a label here), notifier, variant header walk,
+    # data = up to len-16, attribute count must be 0, then 3 × U32. Every failure raises EnvelopeError carrying what
+    # was decoded before the failure (used by the Router, §3.4.3).
 def encode_envelope(code: int, notifier: bytes | str, variant: bytes, enums: WireEnums,
                     ts: tuple[int, int, int] = (0, 0, 0)) -> bytes: ...
 
@@ -1031,8 +1058,11 @@ class ResponseTimestamps:                 # HW TCP Response Data fields 2–7, o
     pre_flatten: int = 0; post_flatten: int = 0; tcp_sending: int = 0
     def as_tuple(self) -> tuple[int, int, int, int, int, int]: ...
 
-def flatten_reply(kind: ReplyKind, value: Any, err: ErrorCluster, *, encoding: str = "cp1252") -> bytes: ...
-    # Response (Flattened) per 02 §8.3; ACK ignores value; IMAGE value = flattened image bytes (b"" on error)
+def flatten_reply(kind: ReplyKind, value: Any, err: ErrorCluster, *, encoding: str = "cp1252",
+                  errors: str = "replace") -> bytes: ...
+    # Response (Flattened) per 02 §8.3; ACK ignores value; IMAGE value = flattened image bytes (b"" on error);
+    # NONE → ValueError. Text (STR value, error source) is encoded with `errors` = "replace": an error source built
+    # from an OS/exception message must never make the reply fail.
 def encode_response_data(notifier: bytes, flattened: bytes, ts: ResponseTimestamps) -> bytes: ...
 def response_frame(datatypes: Datatypes, notifier: bytes, flattened: bytes, ts: ResponseTimestamps) -> bytes: ...
 
@@ -1098,8 +1128,33 @@ BAUD_BY_INDEX: Mapping[int, int] = {0: 9600, 1: 19200, 2: 38400, 3: 115200}
 def load_alox_ini(path: Path, camera_options: CameraOptions, *, warn: Callable[[str], None]) -> AloxSettings: ...
 ```
 
+`ALOX_INI_KEYS` (normative; order = 09 §5.1 frames 0, 1, 2, 3, 5; `kind` = NI suffix; target fields are those of §3.1.3):
+
+| # | Section | Key | Kind | Default | Target |
+|---|---|---|---|---|---|
+| 1–3 | `hardware.camera` / `general` / `log` | `port_I32` / `core_I32` / `maxlines_I32` | I32 | 503 / 1 / 1000 | `port` / `core` / `max_lines` |
+| 4–22 (HM), 23–42 (LM) | `hardware.camera.highmag` / `hardware.camera.lowmag` | `name_STR` | STR | `HighMag` / `LowMag` | `<cam>.camera_name` |
+| | | `buffers_I32`, `timeout_I32` | I32 | 5, 5000 | `<cam>.buffers`, `<cam>.timeout` |
+| | | `flatfieldcorrection_BOOL` | BOOL | FALSE | `<cam>.flat_field` |
+| | | `flatfieldimage_PATH`, `darkfieldimage_PATH` | PATH | empty | `<cam>.flat_field_path`, `<cam>.dark_current_path` |
+| | | `flatfieldfactor_DBL` | DBL | 1 | `<cam>.flat_field_factor` |
+| | | `exposure_STR`, `gain_STR` | STR | `CameraAttributes::Exposure::Value`, `CameraAttributes::Gain::Value` | `<cam>.exposure_attribute`, `<cam>.gain_attribute` |
+| | | `exposuretype_STR`, `gaintype_STR` | STR | `DBL`, `I64` | `<cam>.exposure_type`, `<cam>.gain_type` |
+| | | `hflip_BOOL`, `vflip_BOOL` | BOOL | FALSE | `<cam>.horizontal_flip`, `<cam>.vertical_flip` |
+| | | `framerate_STR`, `frameratetype_STR` | STR | `CameraAttributes::AcquisitionControl::AcquisitionFrameRate`, `DBL` | `<cam>.framerate_attribute`, `<cam>.framerate_type` |
+| | | `frameratemax_DBL` (**LM only**) | DBL | 24.6 | `low_mag.max_framerate` (HM: `CameraOptions.hm_max_framerate`) |
+| | | `LimitMinExposure_DBL` | DBL | 177 | `<cam>.exposure_lower_limit` |
+| | | `waitled_U32` | U32 | 0 | `<cam>.wait_led_ms` |
+| | | `invertled_BOOL` | BOOL | FALSE / TRUE | `<cam>.invert_led` |
+| | | `cameraconnectortype_STR` | STR | `gige` | `<cam>.plug_type` (derived: `usb` any case → `USB`, else `GiGe`) |
+| 43–49 | `hardware.z` | `comport_I32`, `baudrate_I32`, `zaxis_I32` | I32 | 2, 3, 1 | `z.com`, `z.baudrate` (index → rate), `z.axis` |
+| | | `speed_DBL`, `slowspeed_DBL`, `zmin_DBL`, `zmax_DBL` | DBL | 10, 1, 0, 20 | `z.speed`, `z.slow_speed`, `z.min_pos`, `z.max_pos` |
+| 50–51 | `hardware.camera.highmag` | `setLEDline_I32`, `setBULBline_I32` | I32 | 0, 0 | `light.hm_led_line`, `light.hm_bulb_line` |
+| 52 | `general` | `setLEDcam_I32` | I32 | 0 | `light.set_led_cam` (→ `camera_sort_led`, `connector`, 09 §5.3) |
+| 53 | `hardware.camera` | `lightStatusInverter_BOOL` | BOOL | TRUE | `light.led_status_inverter` |
+
 Rules: missing file → all defaults + warning, not created (D2); each key read on its own, invalid value → its default + warning (D4
-fix, no chains); `baudrate_I32` index (other values → 9600 + warning, D7); `cameraconnectortype_STR` case-insensitive `usb` → `USB`,
+fix, no chains); `port_I32` outside 0…65535 → 503 + warning (LabVIEW coerces I32 → U16); `baudrate_I32` index (other values → 9600 + warning, D7); `cameraconnectortype_STR` case-insensitive `usb` → `USB`,
 anything else `GiGe` (D6 fix); paths localized with `localize_path_text` (unmappable → `None` + warning); HM `max_framerate` =
 `camera_options.hm_max_framerate` (D5); `LightSettings` derived per 09 §5.3 (`camera_sort_led` from the selected camera's
 `plug_type`), `bulb_status_inverter` from `camera_options`.
@@ -1144,7 +1199,8 @@ def setup_diagnostic_logging(folders: Folders | None, options: LoggingOptions, *
 class DailyFileHandler(logging.Handler): ...  # (directory, stem); switches file when the local date changes
 ```
 
-Line format, tags, stems and folders exactly 09 §7.2–§7.4 (CRLF, `options.encoding`, no space after the tag). Write failures are
+Line format, tags, stems and folders exactly 09 §7.2–§7.4 (CRLF, `options.encoding` with `errors="replace"`, no space after the
+tag). `recent_lines` = `AloxSettings.max_lines` (`[log] maxlines_I32`, 09 §7.5), passed by `app.build_runtime`. Write failures are
 swallowed (as LabVIEW `Clear Errors`) and reported once per file in the diagnostic log. `append_errors=False` reproduces the offset-0
 write (for byte comparisons), `fix_info_labels=False` reproduces D11.
 
@@ -1176,13 +1232,14 @@ class Replier:                            # implements dispatch.ReplySink
                  tick: TickFn, *, encoding: str = "cp1252") -> None: ...
 ```
 
-Semantics: build `Response (Flattened)` with `wire.protocol.flatten_reply`; timestamps all 0 except `tcp_sending = tick()` taken
-just before `link.send` (02 §8.2); `ack()` with `err.status` and `compat.send_error_replies == False` sends nothing (DEBUG log
-"error ACK suppressed") and returns `err` (02 §8.4); warnings are sent. Typed replies are always sent and return `NO_ERROR`.
-`image()`: if `err.status` the codec is not called and the value is `b""`; otherwise `pre_flatten = tick()`, `codec.flatten(image)`,
-`post_flatten = tick()`; a `CodecError` becomes the reply's error with `b""`; `request/sending/receiving` copied from the request.
-`error_reply(req, kind, err)` sends the kind's default value with `err` (ACK path honours `send_error_replies`). Requests with
-`conn_id == 0` are never sent.
+Semantics: build `Response (Flattened)` with `wire.protocol.flatten_reply` (text `errors="replace"`); timestamps all 0 except
+`tcp_sending = tick()` taken just before `link.send` (02 §8.2); `ack()` with `err.status`, `force == False` and
+`compat.send_error_replies == False` sends nothing (DEBUG log "error ACK suppressed") and returns `err` (02 §8.4); warnings are
+sent. Typed replies are always sent and return `NO_ERROR`. `image()` (camera worker only): `pre_flatten = tick()`; if `err.status`
+the codec is not called and the value is `b""`, otherwise `codec.flatten(image)`; `post_flatten = tick()` (both ticks also on error:
+LabVIEW's `Tick Count` nodes have no error input); a `CodecError` becomes the reply's error with `b""`; `request/sending/receiving`
+copied from the request. `error_reply(req, kind, err, force=…)` sends the kind's default value with `err` (ACK path honours
+`send_error_replies` unless `force`). Every method sets `req.replied = True` first; requests with `conn_id == 0` are never sent.
 
 #### 3.4.3 `aloxcam/server/router.py` (02 §7, 03 §3)
 
@@ -1194,12 +1251,16 @@ class Router:                             # called only from the TCP thread
     def route_frame(self, payload: bytes, conn_id: int) -> Request | None: ...
 ```
 
-`route_frame`: `decode_envelope` (ProtocolError → ERROR log with hex excerpt, drop, `None`); `name = routing.name(code)`;
-`state.record_command(name)`; `route = routing.route(code)`; no route → WARNING "unknown command", and with
-`reply_unknown_commands` an error reply `{TRUE, 9506, "Unknown command <name>"}` of kind `spec.reply` when the name is known and
-its kind is not NONE, else ACK; else `spec = commands.get(name)`, `data = payloads.decode(spec, env.data)` (ProtocolError → `decode_error =
-{TRUE, 91, "Variant To Data in alox_camera_server.vi"}`, WARNING log); camera route sets `receiving_ts = tick()`; `camera_put` /
-`z_put` (never block). Returns the routed `Request`.
+`route_frame`: `decode_envelope`; on `EnvelopeError` with `code_value` and `notifier` both decoded, the code routed and
+`commands.get(name)` not None → history + a `Request` with `decode_error = {TRUE, 116, "Unflatten From String in
+alox_camera_server.vi"}`, timestamps 0, routed as below (WARNING log); any other `EnvelopeError` → ERROR log with hex excerpt, drop,
+`None`. Then `name = routing.name(code)`; `state.record_command(name)`; `route = routing.route(code)`; no route → WARNING "unknown
+command", and with `reply_unknown_commands` an error reply `{TRUE, 9506, "Unknown command <name>"}` with **`force=True`** (sent even
+when `send_error_replies` is FALSE, §7) of kind `spec.reply` when the name is known and its kind is not NONE, else ACK; else
+`spec = commands.get(name)`: `None` (a routed item that is not one of the 46 known names) → `Request(spec=None, data=None)`, nothing
+decoded (the worker's "no handler" path); otherwise `data = payloads.decode(spec, env.data)` (ProtocolError → `decode_error = {TRUE,
+91, "Variant To Data in alox_camera_server.vi"}`, WARNING log); camera route sets `receiving_ts = tick()`; `camera_put` / `z_put`
+(never block). Returns the routed `Request`.
 
 #### 3.4.4 `aloxcam/server/worker.py` (01 §5.3–5.4, §10.2–10.3, 06 §9.5)
 
@@ -1220,10 +1281,13 @@ class Worker:
 
 Loop: `get` blocks unless `background.has_work()` (then `get_nowait` and one `background.step()` per pass, 06 §9.5). If the dequeued
 request was re-queued and the queue is otherwise empty, wait `poll_interval_s` first (LabVIEW's 1 ms `Wait`, 05 §6.3). Dispatch:
-`decode_error` → `reject_undecodable`; no handler → DEBUG log, and with `reply_unknown_commands` `error_reply(kind, 9506)`; handler
-exception → ERROR log with traceback, `err = cluster_of(exc)` (9500) finished like a decode error; `Outcome.requeue` → `requeue`;
-`Outcome.stop` → `after_each()` once, set `stopped`, return. `after_each` runs after every dequeued request (camera: 
-`state.record_camera_iteration`). Commands queued after `Exit` are discarded with the queue (03 §3.4).
+`decode_error` → `reject_undecodable`; no handler (consumer `Default`) → WARNING log (01 A8), and with `reply_unknown_commands`
+`error_reply(kind, {TRUE, 9506, "Unknown command <name>"}, force=True)` (kind = `spec.reply` if known and not NONE, else ACK); handler
+exception → ERROR log with traceback, `err = cluster_of(exc)` (9500) finished like a decode error **only if `req.replied` is FALSE**
+(otherwise logged only); `Outcome.requeue` → `requeue`; `Outcome.stop` → `after_each()` once, set `stopped`, return. `after_each`
+runs after every dequeued request (camera: `state.record_camera_iteration`). Exceptions from `after_each` and `background.step()` are
+logged (ERROR) and the loop continues. Commands queued after `Exit` are discarded with the queue (03 §3.4); `put()` after `stopped`
+is accepted and discarded (DEBUG log).
 
 #### 3.4.5 `aloxcam/server/tcp.py` (02 §3–§5, §9)
 
@@ -1267,6 +1331,7 @@ class RuntimeParts:                       # everything app.build_runtime assembl
     make_camera_context: Callable[[WorkerContext, Callable[[Request], None]], WorkerContext]   # (base, forward_to_z)
     make_z_context: Callable[[WorkerContext], WorkerContext]
     camera_background: BackgroundStepper | None = None
+    abort_waits: Callable[[], None] = lambda: None   # app: ZController.cancel_waits (§3.5.4)
     close_hardware: Callable[[], None] = lambda: None
 
 class ServerRuntime:
@@ -1277,6 +1342,8 @@ class ServerRuntime:
                                                 # then runs exactly as for a client Exit
     def wait(self, timeout: float | None = None) -> bool: ...        # True once fully stopped
     @property
+    def shutdown_started(self) -> bool: ...     # request_shutdown() called or the camera worker stopped (client Exit)
+    @property
     def address(self) -> tuple[str, int]: ...
     @property
     def state(self) -> ServerState: ...
@@ -1286,9 +1353,11 @@ class ServerRuntime:
 
 Shutdown chain (thread `aloxcam-shutdown`, started by `start()`, waits for the camera worker's `stopped`): `link.close()` (replies of
 Z commands still queued are dropped, 01 §6.3) → `tcp.stop()` → join the Z worker (≤ `shutdown_timeout_s`; it ends on the forwarded
-`Exit`) → `camera_background.abort()` → `close_hardware()` (exceptions logged) → stopped. Z-join timeout → ERROR log; `wait()`
-still returns True after `close_hardware`. If the camera worker itself never reaches `Exit` (blocked in a hardware call), `wait()`
-keeps returning False; `app.main` then gives up after `shutdown_timeout_s` with exit code 3 (all threads are daemons).
+`Exit`, after running the Z commands queued before it, as LabVIEW) → on timeout: ERROR log, `abort_waits()` (a running set-up,
+reference or wait ends with 9510 and its reply is dropped), join again (≤ 2 s) → `camera_background.abort()` (the camera worker has
+stopped, so this thread may touch the sessions) → `close_hardware()` (exceptions logged) → stopped. `wait()` returns True after
+`close_hardware`, even if the second Z join timed out (daemon thread). If the camera worker itself never reaches `Exit` (blocked in
+a hardware call), `wait()` keeps returning False; `app.main` then gives up after `shutdown_timeout_s` with exit code 3.
 
 #### 3.4.7 `aloxcam/app.py` and `aloxcam/__main__.py` — CLI
 
@@ -1320,13 +1389,16 @@ def load_configuration(args: argparse.Namespace) -> LoadedConfig: ...
     # server.camera) → WireEnums.from_options; warnings collected and replayed into the diagnostic log once it exists
 def build_runtime(loaded: LoadedConfig, *, simulate: bool, port: int | None = None, host: str | None = None,
                   tick: TickFn | None = None) -> ServerRuntime: ...
-    # creates EventLogs (+ ensure_dirs), codec (imaging.codec.make_codec), backends, ZController, sessions,
-    # PayloadCodec, routing (+ self-check logged), ServerState, handler tables, contexts, close_hardware
+    # creates EventLogs (+ ensure_dirs; recent_lines = alox.max_lines), codec (imaging.codec.make_codec), backends,
+    # ZController, sessions (camera.session.make_sessions), PayloadCodec, routing (+ self-check logged), ServerState,
+    # handler tables, contexts, abort_waits, close_hardware (close_cameras → CameraBackend.close → ZController.close)
 def main(argv: Sequence[str] | None = None) -> int: ...
 ```
 
 Exit codes: 0 normal stop (`Exit` or signal); 1 start-up failure (bind error, `ConfigError`); 2 usage error / no backend; 3 shutdown
-timeout. Signals: SIGINT/SIGTERM (and SIGBREAK on Windows) → `request_shutdown`; a second signal → `os._exit(130)`. Start-up logs (INFO):
+timeout. Signals: SIGINT/SIGTERM (and SIGBREAK on Windows) → `request_shutdown`; a second signal → `os._exit(130)`. The main thread
+only installs the handlers and loops on `runtime.wait(0.2)` (so handlers run promptly); once `runtime.shutdown_started` it allows
+`shutdown_timeout_s + 3` s more before exit code 3. Start-up logs (INFO):
 version, folders, port, provisional enum tables (WARNING), compat values differing from defaults.
 
 ---
@@ -1341,8 +1413,9 @@ GCS axis ids (`"1"`); the "No axis specified" pre-checks are done by `ZControlle
 
 ```python
 class StageBackend(ABC):
-    def connect_rs232(self, port: str, baudrate: int, timeout_ms: int) -> None: ...  # PI Open Interface incl. purge
-                                                                                      # XXX/*IDN?/ERR? (08 §3.2); -6 on failure
+    def connect_rs232(self, port: str, baudrate: int, timeout_ms: int) -> int: ...  # PI Open Interface incl. purge
+                                  # XXX/*IDN?/ERR? (08 §3.2); returns the code the purge's ERR? discarded (0 if none);
+                                  # closes an open link first; -6 on failure
     def close(self) -> bool: ...                       # "Close connection if open"; returns was_connected
     @property
     def is_connected(self) -> bool: ...
@@ -1397,8 +1470,8 @@ class SimStage(StageBackend):
     def position(self) -> float: ...
 ```
 
-Behaviour (single axis `"1"`, deterministic given `clock`): `connect_rs232` accepts any port, clears the error register (purge,
-08 Z22); not connected → `StageError(-4, "<CMD>: not connected")`. Linear motion at the current velocity from the position at command
+Behaviour (single axis `"1"`, deterministic given `clock`): `connect_rs232` accepts any port, returns and clears the latched error
+code (purge, 08 Z22); not connected → `StageError(-4, "<CMD>: not connected")`. Linear motion at the current velocity from the position at command
 time; `is_moving` true until arrival. Controller errors are **latched**, not raised (08 §3.5): `MOV`/`MVR` on an unreferenced axis →
 5, target outside `[stage_min_mm, stage_max_mm]` → 7, joystick enabled → 51; `STP` stops and latches 10; `VEL ≤ 0` latches 17;
 `MAC START` while a macro runs latches 1008. `qerr` returns and clears the register. `FNL` moves to `stage_min_mm` in
@@ -1428,7 +1501,10 @@ class ZController:
     def session(self) -> ZSession: ...
     def setup(self, s: ZStageSettings) -> None: ...   # 08 §4.1–4.2 / §13.3 setup() + VEL normal speed; session written even
                                                       # on failure; error translated (step 19)
-    def close(self) -> bool: ...
+    def close(self) -> bool: ...                      # under lock (waits for a running exchange); idempotent
+    def cancel_waits(self) -> None: ...               # shutdown only (RuntimeParts.abort_waits): from now on wait_ready /
+                                                      # general_wait / setup raise StageError(9510, "<what>: aborted by server
+                                                      # shutdown") at their next poll; sleeps use threading.Event.wait
     def reset_session(self) -> None: ...              # Z Cleanup
     def check_error(self) -> None: ...                # ERR? → StageError(code, "Controller error")
     def translate(self, err: StageError) -> StageError: ...   # appends "\nGCS Error: <text>" when known (08 §11)
@@ -1450,7 +1526,7 @@ class ZController:
 ```
 
 Set-up order (08 §4.2 table / §13.3 `setup()`): `connect_rs232(s.port_name, s.baudrate, 5000)` (its purge replaces the sketch's
-explicit `ERR?` read) → `qidn` → `qsai` → session → `qcst` (≠ `"NOSTAGE"`) → `svo` → `qsvo` → `qron` → (`always_reference` or not
+explicit `ERR?` read; a non-zero discarded code is logged at WARNING, 08 Z22) → `qidn` → `qsai` → session → `qcst` (≠ `"NOSTAGE"`) → `svo` → `qsvo` → `qron` → (`always_reference` or not
 `qfrf`) → `qtrs` ? `frf` : `qlim` ? `reference_move` → `wait_ready` → `qfrf` → `qtmn`/`qtmx`/`qpos` → `check_error` (translated) →
 `vel(s.speed)`. The port name passes through `options.port_map` when it has an entry.
 
@@ -1477,12 +1553,12 @@ Z_HANDLERS: HandlerTable      # the 19 Z commands + "Exit"; every handler finish
 | `Z Set Speed` | 08 §5.3 | settings unchanged (03 C14) |
 | `Z Get Speed` / `Z Get Reference` / `Z Get Position` | 08 §5.3 | defaults 0.0 / FALSE / 0.0 with the error; Get Position writes `state.z_pos` even on error |
 | `Z Do Reference` | 08 §5.3 | label `"FRF"` → FRF, anything else FNL (WARNING if not a known item); `do_reference_waits_ready` (Z13 fix) then `general_wait(polling_ms=10)` then `check_error`; error translated |
-| `Z Move Absolute` / `Z Move Relative` | 08 §5.3, §6, §7 | `implicit_z_reinit` (FALSE → `{TRUE, 5, "Z axis not referenced"}`); re-init warning → `events.info(…, "Move Absolute: Z Reference resetted")`; inclusive sorted range, NaN out of range → 9405 replacing earlier errors; `state.z_pos` on success; reinit error → target 0.0 for the range test (Absolute, inferred); no wait, no `ERR?` (C13) |
+| `Z Move Absolute` / `Z Move Relative` | 08 §5.3, §6, §7 | `implicit_z_reinit` (FALSE → `qfrf()`: FALSE → `{TRUE, 5, "Z axis not referenced"}`, query error → that error, no re-init); TRUE → `check_axis_reference(state.z)`, `state.z_inited` ← its `Z INITED`; re-init warning → `events.info(…, "Move Absolute: Z Reference resetted")`; inclusive sorted range, NaN out of range → 9405 replacing earlier errors; `state.z_pos` on success; reinit error → target 0.0 for the range test (Absolute, inferred); no wait, no `ERR?` (C13) |
 | `Z Wait End Move` | 08 §8 | negative ms → 0; timeout `stage_options.wait_timeout_s` |
 | `Z Stop` | 08 §5.3 | `"STP 1"`; `restart_dh_macro` |
 | `Z Enable/Disable Joystick`, `Z Joystick Enabled ?` | 08 §9 | `JAX` then `JON`(+`ERR?`); BOOL = `JON?` ≠ 0 |
 | `Z Set Min/Max Limit` | 08 §5.3, 03 C15 | `state.replace_z_settings`; non-finite → `{TRUE, 1, "<Command>: value must be finite"}`, limit unchanged |
-| `Z Cleanup` | 08 §5.3, Z9 | close; with `restart_dh_macro` `RMC?` fails (−4) → error ACK; session reset; `z_inited` not reset |
+| `Z Cleanup` | 08 §5.3, Z9 | close; with `restart_dh_macro` `RMC?` fails (−4) → error ACK; FALSE → nothing after the close, success ACK; session reset; `state.z_inited = False` (08 Z9 fix, not client-visible) |
 | `Exit` | 03 §7.19 | `STOP`, no reply, no log |
 
 ---
@@ -1639,6 +1715,9 @@ class CameraSession:                      # touched only by the camera worker th
     def require_device(self, operation: str) -> CameraDevice: ...
         # CameraError(Code.IMAQDX_INVALID_SESSION, f"{operation}: invalid camera session") when device is None
     def reset(self) -> None: ...          # Cam Cleanup: typedef defaults (05 §4.6), state machine reset
+
+def make_sessions(*, compat: CompatSwitches, tick: TickFn, decimal_separator: str = ".") -> dict[str, CameraSession]: ...
+    # one CameraSession with its own GetImageStateMachine per entry of CAMERA_TYPES (used by app.build_runtime)
 ```
 
 #### 3.6.7 `aloxcam/camera/handlers.py` (03 §5–§6, 05, 06 §3)
@@ -1652,6 +1731,7 @@ class CameraContext(WorkerContext):
     camera_options: CameraOptions
     decimal_separator: str = "."
     stage: ZController | None = None               # Phase 4 focus jobs
+    focus: Any | None = None                       # reserved: Phase 4 FocusController (06 §9.5); always None in Phase 1
     sleep: Callable[[float], None] = time.sleep    # Wait LED, LM USB 100 ms (tests patch it)
 CAMERA_HANDLERS: HandlerTable                      # all camera-worker commands of COMMANDS except the two "… Run"
 def close_cameras(sessions: Mapping[str, CameraSession]) -> None: ...   # shutdown: stop + close devices, errors logged
@@ -1663,7 +1743,7 @@ def close_cameras(sessions: Mapping[str, CameraSession]) -> None: ...   # shutdo
 | `Show UI` | 03 §5.2 | `state.show_ui = show`; ACK `NO_ERROR` (no GUI) |
 | `Log` | 03 §5.3 | `state.cam_log_data = data`; ACK `NO_ERROR` |
 | `Exit` | 03 §5.4 | `forward_to_z(Request.make_internal("Exit", …))`; `STOP`; no reply/log |
-| `Cam Setup` | 05 §4.2 | closes the previous device first (05 #9); 5 buffers always, INFO log if `number_of_buffers ∉ {0, 5}` (05 #8); GigE `set_packet_size(8996)`, LM USB `sleep(0.1)`; LM suffix = `"Cam Setup"` + sources of Configure, PacketSize, Open errors; `state.update_camera(inited, acq_state="Stopped", bus_type)`, HM serials |
+| `Cam Setup` | 05 §4.2 | closes the previous device first (05 #9); 5 buffers always, WARNING log if `number_of_buffers ∉ {0, 5}` (05 #8); GigE `set_packet_size(8996)`, LM USB `sleep(0.1)`; LM suffix = `"Cam Setup"` + sources of Configure, PacketSize, Open errors; `state.update_camera(inited, acq_state="Stopped", bus_type)`, HM serials |
 | `Cam Start` | 05 §4.4 | GigE/USB path from the camera's **own** `plug_type` for both cameras (05 #12 fix) |
 | `Cam Stop` | 05 §4.5 | also sets `session.acquisition_state = Stopped` (05 #11) |
 | `Cam Cleanup` | 05 §4.6 | `inited` FALSE first; `session.reset()` |
@@ -1671,14 +1751,14 @@ def close_cameras(sessions: Mapping[str, CameraSession]) -> None: ...   # shutdo
 | `Cam Software Trigger` | 05 §4.8 | always `NO_ERROR` |
 | `Cam Set Exposure` | 05 §5.2 | `exposure_sets_max_framerate` (FALSE, 10 §6 fixed behaviour: HM writes `fr_calc` with its `framerate_type`, DBL included; its upper bound is `hm_max_framerate` when > 0, else the attribute's `MaxDBL`); LM unchanged; source replaced; `fr_calc` text via `format_lv_double`; non-finite → error 1 |
 | `Cam Get Exposure`, `Cam Set Gain`, `Cam Get Gain` | 05 §5.3–5.4 | suffix = attribute + type string |
-| `Cam Stream Next Image` | 05 §6.2 | `temperature_error_fails_image` (FALSE: log the temperature error at WARNING, pass `NO_ERROR` to the state machine); returns `REQUEUE` while `Acquire`; replies `image(ImageData(src_image, custom_data), err)` on `Finished`; logs with the real camera type (05 #26) |
+| `Cam Stream Next Image` | 05 §6.2 | `temperature_error_fails_image` (FALSE: log the temperature error at WARNING, pass `NO_ERROR` to the state machine); returns `REQUEUE` while `Acquire`; replies `image(ImageData(src_image, custom_data), err)` on `Finished`; logs with the real camera type (05 #26); extras per outcome (05 §10.2). Simulation requests still need a set-up camera (temperature read), as LabVIEW: 05 #5 is not applied, `SimCameraBackend` is the hardware-free path |
 | `Cam Get Image` | 05 §6.5 | no reply, no event log; result only in `session.display_image` / `state.error_out` |
 | `Cam Get Images Array` | 03 §5.17 | nothing |
 | `Cam Flip` | 05 §7.2 | `state.replace_camera_settings` |
 | `Cam Set FlatField` | 05 §7.3 | `flatfield_check_on_set` (TRUE: missing file → `{TRUE, 9501, "<path>: flat-field file not found"}`); WARNING log when enabled and a file is missing; `src_image = None` |
 | `Cam Set Led` | 05 §9.2, §12.8 | `state.update(led_cmd, light_trace)`; `ctx.sleep(wait_led_ms/1000)` |
 | `Cam Get Led` | 05 §9.3 | `state.update(led_status)` |
-| `Cam Autofocus`, `Cam Refocus` | 06 §3.1 | **Phase-1 stub**: `err = {TRUE, 9507, "not implemented in this phase (phase 4)"}` finished in order A (suffix appended, logged, ACK → silent while `send_error_replies` = FALSE); focus fields as a failed start (`af/rf_state = "Error"`, data 0×0, progress 0) |
+| `Cam Autofocus`, `Cam Refocus` | 06 §3.1 | **Phase-1 stub**: `err = {TRUE, 9507, "not implemented in this phase (phase 4)"}` finished in order A with `force=True` (suffix appended, logged, ACK **always sent**, even with `send_error_replies` = FALSE, §7); focus fields as a failed start (`af/rf_state = "Error"`, data 0×0, progress 0); an undecodable payload still gives 91 (not forced) |
 | `Cam Get Autofocus Data`, `… Progress` | 06 §3.3 | fully implemented (read `session.focus`) |
 
 General rules: every handler selects the session/settings by the decoded `camera_type` label (already validated); every error path
@@ -1717,7 +1797,7 @@ def make_codec(options: ImageOptions) -> ImageCodec: ...  # ConfigError for unkn
 ```
 
 **Provisional format — NOT the NI format** (the real client cannot decode it; it exists so the server is usable and testable until
-Phase 3). All big-endian: `"ALXIMG01"` · U16 NI image type (`ImageData.ni_image_type`) · U16 0 · I32 width · I32 height · I32
+Phase 3). Implemented with `struct` only (no `aloxcam.lv` import, so WP6 needs only WP2-M2a). All big-endian: `"ALXIMG01"` · U16 NI image type (`ImageData.ni_image_type`) · U16 0 · I32 width · I32 height · I32
 custom-data count *n* · *n* × (LabVIEW string key, LabVIEW string value) · I32 pixel byte count · pixels row-major big-endian.
 
 ---
@@ -1844,16 +1924,17 @@ def main(argv: Sequence[str] | None = None) -> int: ...
 | WP | Title | Owns | Needs first | May start against (before the dependency lands) |
 |---|---|---|---|---|
 | WP1 | Foundation: shared types | `pyproject.toml`, `__init__.py`, `errors.py`, `clock.py`, `settings.py`, `state.py`, `dispatch.py`, `imagedata.py`, `testing.py`, `tests/conftest.py`, `tests/foundation/*` | — | — (small; lands first, ~1–2 days) |
-| WP2 | LabVIEW codec and wire layer | `lv/*`, `wire/*`, `data/wire_enums.toml`, `tests/golden/*`, `tests/wire/*` | WP1 | — . **Milestone M2a** (first commit, before the codec internals): `lv/path.py`, `wire/enums.py`, the TOML, `wire/messages.py` dataclasses + `COMMANDS` (with `PayloadCodec` signatures; bodies may follow) |
+| WP2 | LabVIEW codec and wire layer | `lv/*`, `wire/*`, `data/wire_enums.toml`, `tests/golden/*`, `tests/wire/*` | WP1 | — . Milestones others build against: **M2a** (first commit): `lv/path.py`, `wire/enums.py` + TOML, `wire/messages.py` dataclasses + `COMMANDS`/`CASES`, and every other WP2 module importable with its §3.2 signatures (bodies may raise `NotImplementedError`). **M2b**: `lv/flatten.py` Reader/Writer, `lv/variant.py` `read_variant_header`/`write_variant`/`EMPTY_VARIANT_HEADER`, `wire/protocol.py` complete. **M2c**: `PayloadCodec`, synthetic headers, all golden tests |
 | WP3 | Configuration and event logs | `config/*`, `eventlog.py`, `tests/config/*` | WP1, WP2-M2a (`lv.path.localize_path_text`) | `NIConfig`, folders and `EventLogs` need nothing from WP2; only the path localization in `alox_ini`/`folders` does |
-| WP4 | Server runtime and entry point | `server/*`, `app.py`, `__main__.py`, `tests/server/*` | WP1 | §3.2 APIs (router tests need M2a); fake codec/handlers from `aloxcam.testing`; `app.build_runtime` integrates WP3/5/6 last |
+| WP4 | Server runtime and entry point | `server/*`, `app.py`, `__main__.py`, `tests/server/*` | WP1, WP2-M2a; WP2-M2b for `tcp`/`reply`/`router` tests; WP2-M2c for router payload-decoding tests; WP3 for `test_app.py` | `link.py`, `worker.py`, `runtime.py` against WP1 + fake handler tables from `aloxcam.testing`; `app.build_runtime` integrates WP3/5/6 last |
 | WP5 | Z stage | `zstage/*`, `tests/zstage/*` | WP1, WP2-M2a | `aloxcam.testing` doubles; no dependency on WP3/WP4 |
 | WP6 | Cameras and imaging | `camera/*`, `imaging/*`, `tests/camera/*`, `tests/imaging/*` | WP1, WP2-M2a | `aloxcam.testing` doubles; `ZController` only as a type (Phase 4) |
-| WP7 | Client, replay tool, integration | `client.py`, `tools/*`, `tests/tools/*`, `tests/integration/*`, `README.md` | WP2 (client); all (integration) | client + replay tool against WP2 only (unit tests with a socketpair fake server); integration last |
+| WP7 | Client, replay tool, integration | `client.py`, `tools/*`, `tests/tools/*`, `tests/integration/*`, `README.md` | WP2-M2c and WP6 `imaging/codec.py` (`decode_provisional`, image expectations) for client + replay tool; all (integration) | client + replay tool unit tests with a socketpair fake server; integration last |
 
-Critical path: WP1 → (WP2 M2a) → WP4/WP5/WP6 → WP7 integration. WP3 needs only WP1 plus the M2a path helpers. WP6 refers to
-`ZController` only under `typing.TYPE_CHECKING` (no import-time dependency on WP5); WP4 imports WP3/WP5/WP6 only inside
-`app.build_runtime`.
+Critical path: WP1 → WP2-M2a → (WP3, WP5, WP6; WP4 `link`/`worker`/`runtime`) → WP2-M2b → WP4 `tcp`/`reply`/`router` → WP2-M2c →
+WP7 client/replay → WP4 `app.build_runtime` → WP7 integration. WP6 refers to `ZController` only under `typing.TYPE_CHECKING` (no
+import-time dependency on WP5); WP4 imports WP3/WP5/WP6 only inside `app.py` functions (`load_configuration`, `build_runtime`).
+"Done" for a package (§4.2) means its tests pass once the dependencies listed in this table have landed.
 
 ### 4.2 Acceptance tests per package
 
