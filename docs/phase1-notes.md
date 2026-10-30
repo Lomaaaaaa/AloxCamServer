@@ -232,3 +232,104 @@ open. Later work packages must follow them. Each package adds its own section.
   - where `Z Get Serial` takes its serial number from;
   - `#7` while referencing;
   - whether a macro aborts on error and how `MAC START` chains macros.
+
+## WP4 (server runtime and CLI)
+
+### Error clusters and replies
+
+- **Undecodable envelope:** `{TRUE, 116, "Unflatten From String in alox_camera_server.vi"}`. The request and sending timestamps are
+  0. On the camera route the receiving timestamp is still set (the design's step flow). The command is recorded in the history.
+- **Undecodable payload:** `{TRUE, 91, "Variant To Data in alox_camera_server.vi"}`. Any exception from `PayloadCodec.decode`
+  gives 91, not only `ProtocolError`, so the TCP thread survives a decoder bug.
+- **Unknown command:** `{TRUE, 9506, "Unknown command <label or #code>"}`.
+  - It is sent by the router (codes that are not routed) and by the worker (no handler).
+  - The reply kind is the command's own, or ACK when the command is unknown or has none.
+  - It is always forced, and never sent for internal requests.
+- **Handler exceptions** are finished as 9500 through `reject_undecodable` (camera: the spec's suffix, High Mag as camera type).
+  Nothing is sent if the request was already replied.
+- **Replier:**
+  - a value that cannot be encoded (a handler bug, for example a negative U32) is answered with the reply kind's default value
+    and error 9500 instead of raising;
+  - a codec exception other than `CodecError` becomes 9500 in the image reply;
+  - an image reply with no image and no error sends empty image bytes and logs a WARNING.
+
+### Worker and handlers
+
+- An `Exit` handler that raises still stops the loop. If the error path itself fails, the failure is logged and the loop
+  continues.
+- The background stepper's `has_work()` is checked again after each dispatch (06 §9.5). The 1 ms stream pause is a
+  `time.sleep`.
+- **Camera worker settings:** `after_each` is `state.record_camera_iteration`, and the poll interval is `stream_poll_ms / 1000`.
+- **Both handler tables need `"Exit"`:**
+  - the camera `Exit` calls `forward_to_z(Request.make_internal("Exit", COMMANDS["Exit"]))` and returns `STOP`;
+  - the Z `Exit` returns `STOP`.
+
+### Shutdown
+
+The shutdown order is:
+
+1. close the link;
+2. stop the TCP thread;
+3. join the Z worker (up to `shutdown_timeout_s`);
+4. on timeout, call `abort_waits()` and `z_worker.stop_now()`, then join again (up to 2 s);
+5. call `background.abort()`;
+6. call `close_hardware()`;
+7. mark the runtime stopped.
+
+`stop_now()` is needed because a Z worker that never received the forwarded `Exit` would otherwise never end. Each step catches
+and logs its own exceptions. `ServerRuntime.started` is public.
+
+### ClientLink and TcpServer
+
+- **`ClientLink`:**
+  - `attach()` raises `RuntimeError` while a connection is attached;
+  - `detach()` waits for a reply being written, so the TCP thread can close the socket safely;
+  - after a failed write, later sends on that connection are dropped without retrying;
+  - `close()` never blocks, and there is a `closed` property.
+- **`TcpServer`:**
+  - the mid-frame timeout is one deadline of `io_timeout_s` for the rest of a frame after its first byte, enforced with `select`;
+    the socket timeout is never changed;
+  - the listener uses `socket.create_server` (IPv6 when the host contains `:`);
+  - an unknown datatype, including `Statut`, is logged at WARNING and ignored;
+  - an accept error other than a timeout is logged at ERROR and retried after 0.2 s;
+  - `server_state` is set to `"Listen"` or `"Read"`;
+  - shutdown can take up to 0.2 s, because the accept loop only notices `stop()` between 0.2 s waits.
+
+### CLI (`app.py`)
+
+- **Exit codes:** 0 / 1 / 2 / 3 as in the design. Running without `--simulate` exits 2 in phase 1, because
+  `build_runtime(simulate=False)` raises `ConfigError`.
+- **`--write-settings-template`** on an existing file exits 1.
+- **`--check-config` exits 1 on:**
+  - a configuration error while loading;
+  - a bad payload layout;
+  - an unknown tick source, image codec (WP6's `make_codec`) or encoding;
+  - a port out of range.
+
+  Routing self-check problems are printed but not fatal, as at start-up (logged at ERROR, the server still runs).
+- **Ready file:** contains `"<host> <port>\n"` and is written atomically. If it cannot be written, the server shuts down and
+  exits 1.
+- **Signal handlers** are installed only from the main thread, and the previous handlers are restored when `main` returns.
+- **Logging:** a temporary stderr log handler is used until the diagnostic log exists. All handlers are removed and the logger
+  level restored when `main` returns.
+- **`build_runtime`:**
+  - calls `ensure_dirs()` unconditionally, because WP3's version honours `create_log_dirs`;
+  - passes the `ZController` to the camera context's `stage` field (for phase 4);
+  - calls `startup_macro_check()`.
+- **`load_configuration`** passes `--setup-ini`, or `executable_folder()/alox_setup.ini`, to `resolve_folders`. It does not pass
+  `exe_dir`.
+- **New public names:** `app.check_config`, the `EXIT_*` constants, `LOG_LEVELS`, `ALOX_INI_NAME`, `SETUP_INI_NAME` (not in
+  `__all__`), `router.ENVELOPE_ERROR`, `router.PAYLOAD_ERROR` and `router.unknown_command_error`.
+
+### For WP7 and later phases
+
+- **Integration fixture** (design §5.1):
+  1. `app.load_configuration(app.parse_args([...]))`;
+  2. `app.build_runtime(loaded, simulate=True, port=0)`;
+  3. `runtime.start()`;
+  4. for teardown, `request_shutdown()` then `wait()`.
+- In-process tests that call `build_runtime` directly get no diagnostic log file, because only `main()` sets it up. The event
+  logs are still written.
+- `python -m aloxcam` in subprocess tests needs `PYTHONPATH=src`, because the package is not installed.
+- `tests/server/wp4_helpers.py` has reusable doubles: `Fakes`, `make_parts`, `command_frame` and `read_reply`.
+- **Phase 4:** pass the focus controller as `RuntimeParts.camera_background`.
