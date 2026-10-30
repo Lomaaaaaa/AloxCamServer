@@ -83,3 +83,65 @@ open. Later work packages must follow them. Each package adds its own section.
 - For WP3: `LOG_LINES` (the camera line is a template: call `.filled(code, source)`) and `OFFSET_ZERO_EXAMPLE` (09 §7.3, expected
   tail `b"ut of range (Move Absolute)\r\n"`).
 - For WP4 (`test_reply`): `GET_HEARTBEAT_REPLY`.
+
+## WP3 (configuration and event logs)
+
+### Additions to the design
+
+- **New public names:** `config.folders.SETUP_INI_NAME`, `config.alox_ini.ALOX_INI_NAME`, `DailyFileHandler.path_for(day)` and
+  `DailyFileHandler.current_path`. `DailyFileHandler` also takes the keyword-only arguments `encoding="utf-8"`, `create_dir=True`
+  and `level`.
+- **Value checks in `load_server_config`.** An invalid value gives the default plus a warning:
+  - `tick_source` (monotonic | windows) and `codec` (provisional | nivision) are normalized to lower case;
+  - `reference_move` (FNL | FPL), `pixel_type` (U8 | U16) and `diag_level` (a stdlib level name) are normalized to upper case;
+  - encodings must exist (`codecs.lookup`), `decimal_separator` must be one character, and `listen_address` and
+    `diag_file_stem` must not be empty;
+  - ports must be 0–65535 and floats finite; timeouts, frame rates, image size and `max_payload_mb` must be above 0, and the
+    other numbers 0 or more.
+- **`EventLogs` with `create_log_dirs` = TRUE** also creates `logs/` before each write, so lines are not lost if the folder
+  disappears while the server runs.
+
+### Behaviour details
+
+- **`NIConfig`:**
+  - section names match case-insensitively but are not trimmed (09 §6.6 sketch);
+  - keys written before the first section can never be read;
+  - `sections()` and `keys()` list each name once, with its first spelling, in file order; `keys()` only shows the first copy of
+    a duplicated section;
+  - `read_list` reads like `read_str`, splits on commas, strips each item and drops empty ones; an empty value gives `()`;
+  - `load` removes a UTF-8 BOM whatever the encoding and replaces undecodable bytes.
+- **Folders:**
+  - `Folders.exe` is always `exe_dir` or `executable_folder()`, even when `setup_ini` is given;
+  - a value that is empty or only spaces counts as empty (default plus warning, D3);
+  - a file that is missing or unreadable gives the defaults plus a warning;
+  - the `--settings-dir` value is used as given, without localization, and relative folder paths are kept.
+- **`load_alox_ini`:**
+  - a missing key gives its default with only a DEBUG log, because four of the real files have no `lightStatusInverter_BOOL`;
+  - a High Mag `frameratemax_DBL` is ignored, also logged at DEBUG;
+  - `cameraconnectortype_STR` is compared without trimming.
+- **`load_server_config`:**
+  - in `[wire.items]`, `[wire.size]` and `[wire.layout]`, an empty entry or a non-integer size is warned and skipped; the size
+    values (1/2/4) are checked by `wire.enums`;
+  - `[wire] enums_file` goes through `localize_path_text`; an unmappable path gives None plus a warning;
+  - `[server] max_payload_mb` may be a fraction and becomes `int(round(mb * 2**20))`;
+  - `[stage] port_map` keys are upper-cased (`com3` → `COM3`) and backslashes are kept (`\\.\COM10`); a bad item is warned and
+    skipped, and the first occurrence wins;
+  - `[image] nivision_library` is read without unescaping, so Windows backslashes are kept;
+  - duplicate keys are not warned.
+- **Server INI template:** `write_template` writes the Appendix A text as CRLF ASCII and does not create parent folders. A test
+  checks that `SERVER_INI_TEMPLATE` equals Appendix A of `phase1-design.md`, so the two must be edited together.
+- **`EventLogs`:**
+  - `recent()` holds both error and info lines (`deque(maxlen=max(0, recent_lines))`), including lines whose file write failed;
+  - a missing folder (`vision` or `data` = None) is reported once in the diagnostic log;
+  - an unknown `options.encoding` falls back to cp1252 with a warning;
+  - offset-0 mode (`append_errors = FALSE`) reproduces the 09 §7.3 example byte for byte; info lines always append;
+  - every diagnostic write warning includes the lost line and comes from the `aloxcam.eventlog` logger.
+- **`setup_diagnostic_logging`:**
+  - it can be called again: handlers from an earlier call are closed and removed;
+  - it sets the level of the `aloxcam` logger and leaves `propagate` alone, so `caplog` keeps working; tests that call it should
+    restore the logger afterwards (`test_eventlog.py` has a fixture for this);
+  - the diagnostic file is `<vision>/logs/<yymmdd>_<diag_file_stem>.log`, UTF-8 with plain newlines; if it cannot be opened, the
+    failure is reported once per day and that day's records are dropped.
+- **Tests:** path tests clear `ALOX_DRIVE_C`, `ALOX_DRIVE_D` and `ALOX_EXE_DIR` and skip the drive-mapping cases on win32. The
+  unwritable-folder test puts a file where `logs/` should be, so it also works when tests run as root. The five owner INI
+  files are byte-exact copies in `tests/config/data/real/`.
