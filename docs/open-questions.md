@@ -27,11 +27,11 @@ The client is presumably the LabVIEW "ALOX Vision Core", which uses notifiers an
 the new server must reproduce LabVIEW's binary format exactly. That means flattened clusters, flattened variants with type
 descriptors, and NI's proprietary image format (`IMAQ Flatten Image to String`).
 
-- [ ] The client stays unchanged, so the new server must be byte-compatible.
+- [x ] The client stays unchanged, so the new server must be byte-compatible.
 - [ ] The client can be modified, so we may switch to a simpler protocol (e.g. JSON/msgpack plus raw or PNG images).
 - [ ] The client will be rewritten too.
 
-What language is the client written in? Answer:
+What language is the client written in? Answer: Labview
 
 ### Q2 (P1): Ordered enum items and their representation
 
@@ -44,11 +44,11 @@ How to get it: in LabVIEW, open each `.ctl`, right-click the enum, choose **Edit
 
 | Enum (file) | Screenshot file name or list of items | Representation (U8/U16/U32) |
 |---|---|---|
-| `typedef_ext_camera_camera_command.ctl` (**most important**) | | |
+| `typedef_ext_camera_camera_command.ctl` (**most important**) | picture attached| U16|
 | `HW TCP Datatype.ctl` | | |
 | `HW TCP Server Command.ctl` (internal, never sent on the network: low priority) | | |
 | `alox_typedef_camera_type.ctl` | | |
-| Camera Plug Type (in the camera properties typedef) | | |
+| Camera Plug Type (in the camera properties typedef) | USB OR GIGE OR BOTH , 2 brand possible IDS OR allied | |
 | `typedef_ext_camera_camera_command_type_LED.ctl` | | |
 | `alox_typedef_autofocus_method.ctl` | | |
 | `alox_typedef_autofocus_speed.ctl` | | |
@@ -96,7 +96,7 @@ has to be reverse-engineered, or the client changed.
 - [ ] Yes, NI Vision Runtime can stay installed.
 - [ ] No, NI must be removed completely.
 
-Answer:
+Answer: it can be both no real deal. Keep or remove I jsut want to improve my software
 
 ---
 
@@ -109,8 +109,8 @@ software stack. The answer decides which camera library we use: Harvesters/GenTL
 
 | | Brand | Model | Interface (GigE / USB3 / FireWire) | Pixel format (Mono8 / Mono16 / other) |
 |---|---|---|---|---|
-| High Mag camera | | | | |
-| Low Mag camera | | | | |
+| High Mag camera | IDS or allied | | USB OR GIGE | Mono 8 with a IMX264 |
+| Low Mag camera | same as High mag | | | |
 
 ### Q8 (P1): LED and bulb wiring
 
@@ -119,19 +119,19 @@ Which camera output line drives the LED, and which drives the bulb? Is the signa
 
 | Light | Camera (HM / LM) | Output line | Active high or low |
 |---|---|---|---|
-| LED | | | |
-| Bulb | | | |
+| LED | for low mag otherwise off| | |
+| Bulb | for highmag otherwise off | | |
 
 ### Q9 (P1): PI controller and Z stage
 
 | Item | Answer |
 |---|---|
-| Reply of `*IDN?` (controller model, e.g. C-863.11 / C-663) | |
-| Connection: native RS-232 or USB (virtual COM port)? | |
-| Real baud rate (INI default is 115200) | |
-| COM port number | |
-| Z stage model | |
-| Reference switch, or limit switches only? | |
+| Reply of `*IDN?` (controller model, e.g. C-863.11 / C-663) | C-663|
+| Connection: native RS-232 or USB (virtual COM port)? | RS 232 through a moxa |
+| Real baud rate (INI default is 115200) | 115200|
+| COM port number | usually 2 or 3 (value in ini file) |
+| Z stage model | L509.40s |
+| Reference switch, or limit switches only? | I don't know |
 
 ### Q10 (P2): Controller macros `DH` and `HOME`
 
@@ -141,16 +141,34 @@ The server restarts macro `DH` automatically (in Get Status, Stop and Cleanup). 
 - [ ] Keep the automatic restart of `DH`.
 - [ ] Drop it.
 
-Content of `DH`:
+Content of `DH`:JRC 5 POS? 1 < 5.05
+DIO 1 1
+DEL 1000
+DIO 1 0
+DEL 2000
+JRC 5 POS? 1 > 5.05
+DIO 1 0
+DEL 1000
+DIO 1 1
+DEL 2000
+JRC 2 DIO? 1 = 0
+MAC START HOME
+MAC START DH
 
-Content of `HOME`:
+
+Content of `HOME`:JAX 1 1 1
+JON 1 0
+MOV 1 0
+WAC ONT? 1 = 1
+MAC START DH
+
 
 ### Q11 (P2): `Z Setup` referencing
 
 `Z Setup` may reference the axis with FNL, which drives the stage to its negative limit. Whether it does so every time or only
 when the axis is not yet referenced depends on hidden options of PI's set-up VI (see Q41 and Q35).
 
-- [ ] Reference every time `Z Setup` is called.
+- [x ] Reference every time `Z Setup` is called.
 - [ ] Only reference when the axis is not referenced yet.
 
 Answer:
@@ -171,7 +189,7 @@ Please attach the files actually in use. If they contain anything confidential, 
 
 ### Q13 (P2): Target operating system
 
-- [ ] Windows only.
+- [x ] Windows only.
 - [ ] Windows and Linux.
 
 Answer:
@@ -181,7 +199,7 @@ Answer:
 The analysis will recommend **Python**: NumPy/OpenCV for image processing, the official PI library (`pipython`), and the camera
 vendor SDKs.
 
-- [ ] Python is fine.
+- [x ] Python is fine.
 - [ ] Preference for another language (which, and why).
 - [ ] Must be delivered as a single packaged `.exe`.
 - [ ] Must run as a Windows service (no window).
@@ -194,10 +212,10 @@ The LabVIEW front panel shows the live image, focus graph, temperatures, command
 invisible when running as an `.exe`.
 
 - [ ] No GUI needed: headless service plus log files is enough.
-- [ ] A small diagnostic GUI or web page would be useful.
+- [ x] A small diagnostic GUI or web page would be useful.
 - [ ] Need an equivalent of the full front panel.
 
-Answer:
+Answer:only for troubleshooting
 
 ---
 
@@ -222,9 +240,10 @@ on only after the network capture (Q4) or your answer shows that the client does
 | Q26 | Refocus PNG names look like `…_refocus__mesa` with a space-padded index. | Reproduce if other tools read these names | [ ] | [ ] | [ ] |
 | Q27 | Focus metrics: the FFT score includes the DC term; FULL mode has a race condition; the 20×20 low-pass may have no effect. | Reproduce the maths, fix the race | [ ] | [ ] | [ ] |
 | Q28 | Several self re-enqueues into queues limited to 5 elements can **deadlock** the server under load. | Fix | [ ] | [ ] | [ ] |
+Do what you must on all this topics (Q1- to 28)
 
 Q22: where is the best Z chosen today? In the client, or elsewhere? Answer:
-
+best Z is computed by software
 Q21 / Q23 / anything else to tell the author:
 
 ---
@@ -236,7 +255,7 @@ Q21 / Q23 / anything else to tell the author:
 A machine with LabVIEW 2018 + Vision would let us export reference outputs (resampling, edge detection, FFT, flat-field)
 from test images, so the new code can be compared number by number.
 
-- [ ] Yes, a LabVIEW 2018 + Vision machine is available.
+- [x ] Yes, a LabVIEW 2018 + Vision machine is available.
 - [ ] No, but I can provide sample images (raw + flat-field + dark-current) with the LabVIEW results.
 - [ ] Neither.
 
@@ -246,7 +265,7 @@ Answer:
 
 | Item | How to check | Answer |
 |---|---|---|
-| Default value of input `FULL` in `alox_vision_measure_focus_sobel.vi` (probably False) | Open the VI, look at the control | |
+| Default value of input `FULL` in `alox_vision_measure_focus_sobel.vi` (probably False) | Open the VI, look at the control | I don't know |
 | Is `alox_camera_server_get_image_state_machine.vi` reentrant? | VI Properties → Execution | |
 | Are `alox_vision_measure_focus_fft.vi` / `_sobel.vi` reentrant? | VI Properties → Execution | |
 | Is "Automatic error handling" enabled in `alox_camera_server.vi`? | VI Properties → Execution | |
