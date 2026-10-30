@@ -7,10 +7,29 @@ the Python structure, the public APIs, the decisions the spec leaves open, the w
 spec chapter disagree on *behaviour*, the spec chapter wins unless this document lists the point as a decision (§6, §7).
 
 **Fixed decisions** (not revisited here): Python ≥ 3.11, src layout, setuptools, runtime deps = stdlib + numpy; threads +
-`queue.Queue` (01 §10, 02 §11.2); workers write replies through `ClientLink.send()`; wire enums in a provisional package data file;
+`queue.Queue` (01 §10, 02 §11.2); workers write replies through `ClientLink.send()`; wire enums in a package data file (orders confirmed by the owner, see §0.1);
 the `[compat]` registry of 10 §6 in `<settings>/alox_camera_server.ini` (`alox.ini` is read-only); pluggable `ImageCodec`;
 `CameraBackend` / `StageBackend` interfaces with `SimCamera` / `SimStage`; every command of 03 implemented at API level except the
 focus jobs and metrics (Phase 4), which reply "not implemented in this phase".
+
+### 0.1 Owner answers incorporated (2026-10-30)
+
+The owner's answers ([answers/owner-answers.md](answers/owner-answers.md)) supersede the provisional assumptions of the spec:
+
+- **Wire enums** (§3.2.4): the item order of `Camera Command` (46 items, U16), `TCP DataType` (5 items, including a new
+  `Statut` = 4), `Camera Type`, `Autofocus Speed`, `Autofocus Method` and `Refocus Method` are confirmed. Only the Z reference
+  enum stays provisional. The representation of every enum except `Camera Command` is still assumed U16.
+- **Routing**: with the real order, `Cam Autofocus Run` (22) and `Cam Refocus Run` (23) lie **inside** the camera range. They are
+  excluded explicitly through `build_routing(non_routable=…)` (03 C16), not by their position.
+- **Cluster order** (§3.2.5): `Camera Init Data` is in **panel order** (Camera Type, Camera Name, Number of buffers, Continuous
+  Mode). The spec's Unbundle-order assumption was wrong. `Camera Autofocus Data`, `Camera Refocus Data`, `Z Stage Wait Data` and
+  `Z Stage Joystick Data` are confirmed in panel order. Integer widths are still assumed I32.
+- **Hardware**: PI **C-663** controller (not C-863) over RS-232 via a Moxa, 115200 Bd. The controller runs the `DH` macro as a
+  daemon and `HOME` on digital input 1 (owner-answers §5). Cameras are IDS or Allied Vision, USB3 or GigE, Mono8 IMX264
+  (2448 × 2048); there is no FireWire.
+- **Configuration fixtures**: five real `alox.ini` files are in `docs/answers/ini/`. WP3 copies them to `tests/config/data/real/`
+  and tests against them (§4.2).
+- **Q16–Q28** use the recommended defaults (owner-answers §7). They match the `[compat]` defaults of this design.
 
 ## 0. Conventions for implementers
 
@@ -47,7 +66,7 @@ src/aloxcam/
   dispatch.py                          WP1  Request, Outcome, ReplyKind, CommandSpec, contexts, sinks, finish helpers  03 §1.1, §4
   imagedata.py                         WP1  ImageData, ImageCodec protocol                                   02 §8.5
   testing.py                           WP1  test doubles: FixedClock, RecordingReplies, RecordingEvents, make_request
-  data/wire_enums.toml                 WP2  PROVISIONAL wire enum tables (§3.2.4)                             04 §6, Q2
+  data/wire_enums.toml                 WP2  wire enum tables (confirmed orders, §3.2.4)                             04 §6, Q2
   lv/__init__.py                       WP2
   lv/flatten.py                        WP2  big-endian Reader/Writer, layout-driven cluster (un)flatten       02 §6, 04 §3
   lv/path.py                           WP2  LVPath (PTH0), path text ↔ local Path                             04 §3.2, 09 §6.3
@@ -72,7 +91,7 @@ src/aloxcam/
   zstage/__init__.py                   WP5
   zstage/backend.py                    WP5  StageBackend ABC (GCS level)                                     08 §3, §13.2
   zstage/gcs_errors.py                 WP5  minimal GCS error text table (used by SimStage)                  08 §11
-  zstage/sim.py                        WP5  SimStage: simulated Mercury C-863 at GCS level
+  zstage/sim.py                        WP5  SimStage: simulated PI C-663 at GCS level
   zstage/controller.py                 WP5  ZController: locked link + session, set-up, ref check, waits     08 §4, §6, §8, §12, §13.3
   zstage/handlers.py                   WP5  ZContext + the 19 Z handlers + Exit                              03 §7, 08 §5, §13.4
   camera/__init__.py                   WP6
@@ -81,7 +100,7 @@ src/aloxcam/
   camera/attributes.py                 WP6  typed attribute access, LabVIEW numeric coercion, attribute names 05 §2.1, §5.1
   camera/pipeline.py                   WP6  flip, flat-field, custom data, PNG-folder simulation             05 §7, §8
   camera/acquisition.py                WP6  AcqState, per-camera GetImageStateMachine                         05 §6.3–6.4, §12.7
-  camera/session.py                    WP6  CameraSession, FocusFields                                       05 §3.2, 06 §2.5
+  camera/session.py                    WP6  CameraSession, FocusFields, make_sessions                        05 §3.2, 06 §2.5
   camera/handlers.py                   WP6  CameraContext + camera/general handlers (+ Phase-4 stubs)        03 §5–§6, 05, 06 §3
   imaging/__init__.py                  WP6
   imaging/png.py                       WP6  minimal PNG reader/writer (zlib + numpy)                         05 §8.2
@@ -176,7 +195,7 @@ markers = ["integration: end-to-end tests with a live server on loopback", "slow
     holding one, code never takes another of these locks and never calls a handler, a backend, a `ReplySink` or an `EventSink`
     (stdlib `logging` is allowed anywhere). The only nesting is `ZController.lock` → `StageBackend` call; `ZController` does not
     call `ServerState`, `ReplySink` or `EventSink`. Waits (`wait_ready`, `general_wait`) take the lock per exchange, never across a
-    sleep.
+    sleep, except inside `setup()`, which holds it for the whole sequence (08 §13.3); `cancel_waits()` needs no lock.
   - *At most one reply per request* (02 §10 rule 3): every `ReplySink` method sets `req.replied = True`, also when the frame is
     suppressed or dropped; nothing replies to a request whose `replied` is already TRUE (the worker's exception path checks it).
 
@@ -382,7 +401,7 @@ class WireOptions:                       # [wire], [wire.items], [wire.size], [w
     enum_sizes: Mapping[str, int] = field(default_factory=dict)               # enum_id → 1 | 2 | 4
     layouts: Mapping[str, str] = field(default_factory=dict)                  # typedef label → raw layout text (§3.2.1)
     encoding: str = "cp1252"
-    init_data_fallback: bool = True      # Camera Init Data: also try the other field order (04 §7.1)
+    init_data_fallback: bool = False     # Camera Init Data: also try the old Unbundle order (order confirmed, §0.1)
 
 @dataclass(frozen=True)
 class LoggingOptions:                    # [logging]
@@ -428,7 +447,7 @@ class SimulationOptions:                 # [simulation]
     stage_max_mm: float = 25.0
     stage_initially_referenced: bool = False
     stage_reference_s: float = 0.2
-    stage_identity: str = "(c) aloxcam SimStage, C-863.11-SIM, 0000000001, 0.0.0"
+    stage_identity: str = "(c) aloxcam SimStage, C-663-SIM, 0000000001, 0.0.0"
     stage_dh_macro_s: float = 0.0
 
 @dataclass(frozen=True)
@@ -792,7 +811,8 @@ File format (schema 1). Every table: `label`, `ctl`, `size` (1|2|4), `provisiona
 unknown code decodes as `"#<code>"` instead of failing), `items` (labels in **value** order: code = index).
 
 ```toml
-# aloxcam/data/wire_enums.toml — PROVISIONAL. Real orders/representations are UNKNOWN (Q2, 04 §6, 10 R1).
+# aloxcam/data/wire_enums.toml — item orders from the owner's Edit Items screenshots (docs/answers/owner-answers.md §1).
+# Representation: Camera Command is U16 (confirmed); the others are assumed U16 (LabVIEW default).
 # Override in <settings>/alox_camera_server.ini: [wire] enums_file, [wire.items], [wire.size].
 schema = 1
 
@@ -800,63 +820,61 @@ schema = 1
 label = "TCP DataType"
 ctl = "HW TCP Datatype.ctl"
 size = 2                      # must be 2 (02 §5.2)
-provisional = true
-items = ["Command", "Response", "Image", "Heartbeat"]
+provisional = false
+items = ["Command", "Response", "Image", "Heartbeat", "Statut"]   # "Statut" (4): new item, not used by the server
 
 [enums.camera_command]
 label = "Function"
 ctl = "typedef_ext_camera_camera_command.ctl"
-size = 2
-provisional = true
+size = 2                      # U16, confirmed
+provisional = false
 items = [
-  # camera range "Get Heartbeat".."Cam Get Led": 24 items, order of 04 §6.2
-  "Get Heartbeat", "Show UI", "Exit", "Cam Setup", "Cam Start", "Cam Get Image", "Cam Stream Next Image",
-  "Cam Get Acquisition Status", "Cam Software Trigger", "Cam Set Exposure", "Cam Set FlatField", "Cam Set Gain",
-  "Cam Get Exposure", "Cam Get Gain", "Cam Get Images Array", "Cam Stop", "Cam Cleanup", "Cam Flip", "Cam Autofocus",
-  "Cam Refocus", "Cam Get Autofocus Data", "Cam Get Autofocus Progress", "Cam Set Led", "Cam Get Led",
-  # explicit camera route
+  # 0..25: camera range "Get Heartbeat".."Cam Get Led" (includes Exit, Show UI and the two internal Run commands)
+  "Get Heartbeat", "Cam Setup", "Cam Start", "Cam Get Image", "Cam Stream Next Image", "Cam Get Acquisition Status",
+  "Cam Software Trigger", "Cam Set Exposure", "Cam Get Exposure", "Cam Set Gain", "Cam Get Gain", "Cam Get Images Array",
+  "Cam Stop", "Cam Cleanup", "Exit", "Show UI", "Cam Autofocus", "Cam Set FlatField", "Cam Refocus", "Cam Flip",
+  "Cam Get Autofocus Data", "Cam Get Autofocus Progress", "Cam Autofocus Run", "Cam Refocus Run", "Cam Set Led", "Cam Get Led",
+  # 26..44: Z range "Z Setup".."Z Do Reference"
+  "Z Setup", "Z Get Serial", "Z Get Status", "Z Get Error", "Z Set Speed", "Z Get Speed", "Z Get Position",
+  "Z Move Absolute", "Z Move Relative", "Z Wait End Move", "Z Stop", "Z Enable Joystick", "Z Disable Joystick",
+  "Z Joystick Enabled ?", "Z Set Min Limit", "Z Set Max Limit", "Z Cleanup", "Z Get Reference", "Z Do Reference",
+  # 45: explicit camera route
   "Log",
-  # Z range "Z Setup".."Z Do Reference": 19 items, Z Do Reference last (03 §3.2 point 3)
-  "Z Setup", "Z Get Serial", "Z Get Status", "Z Get Error", "Z Set Speed", "Z Get Speed", "Z Get Reference",
-  "Z Get Position", "Z Move Absolute", "Z Move Relative", "Z Wait End Move", "Z Stop", "Z Enable Joystick",
-  "Z Disable Joystick", "Z Joystick Enabled ?", "Z Set Min Limit", "Z Set Max Limit", "Z Cleanup", "Z Do Reference",
-  # internal, outside both ranges (never routed, 03 C16)
-  "Cam Autofocus Run", "Cam Refocus Run",
 ]
 
 [enums.camera_type]
 label = "Camera Type"
 ctl = "alox_typedef_camera_type.ctl"
 size = 2
-provisional = true            # codes inferred strong (04 §3.3); size unknown
+provisional = false
 items = ["High Mag.", "Low Mag."]
 
 [enums.autofocus_speed]
 label = "Autofocus Speed"
 ctl = "alox_typedef_autofocus_speed.ctl"
 size = 2
-provisional = true
+provisional = false
 items = ["Slow", "Fast"]
 
 [enums.autofocus_method]
 label = "Autofocus Method"
 ctl = "alox_typedef_autofocus_method.ctl"
 size = 2
-provisional = true
+provisional = false
 items = ["FFT", "Sobel", "Prewitt", "Diff", "Gradient", "Sigma", "FULL"]
 
 [enums.refocus_method]
 label = "Refocus Method"
 ctl = "alox_typedef_refocus_method.ctl"
 size = 2
-provisional = true
+provisional = false
 items = ["Fin", "Oxyd"]
 
 [enums.z_reference_method]
 label = "Z Reference Method"
 ctl = "(bare enum in the main VI)"
 size = 2
-provisional = true
+provisional = true            # still unknown: only FNL (Default) and FRF have a case
 lenient = true                # any value other than FRF runs FNL (08 §5.3)
 items = ["FNL", "FRF"]
 ```
@@ -916,7 +934,7 @@ Payload dataclasses carry `LV_TYPEDEF: ClassVar[str]` (typedef label = `[wire.la
 | Class | `LV_TYPEDEF` | `LV_LAYOUT` (cluster order; defaults ≠ zero in brackets) |
 |---|---|---|
 | `CameraGetImageData`, `CameraStatusData`, `CameraTriggerSoftData`, `CameraGetExposureData`, `CameraGetGainData`, `CameraStopData`, `CameraReleaseData`, `CameraGetAutofocusData`, `CameraGetLedData` (subclasses of `CameraOnlyData`) | `Camera Get Image Data`, `Camera Status Data`, `Camera Trigger Soft Data`, `Camera Get Exposure Data`, `Camera Get Gain Data`, `Camera Stop Data`, `Camera Release Data`, `Camera Get Autofocus Data`, `Camera Get LED Data` | `CT` |
-| `CameraInitData` | `Camera Init Data` | `CT, continuous_mode:bool, number_of_buffers:i32, camera_name:str` (`LAYOUT_UNBUNDLE`, working assumption 04 §7.1); `LAYOUT_PANEL = CT, camera_name:str, number_of_buffers:i32, continuous_mode:bool` |
+| `CameraInitData` | `Camera Init Data` | `CT, camera_name:str, number_of_buffers:i32, continuous_mode:bool` (`LAYOUT_PANEL`, **confirmed** §0.1); `LAYOUT_UNBUNDLE = CT, continuous_mode:bool, number_of_buffers:i32, camera_name:str` is kept only for the optional fallback |
 | `CameraStartData` | `Camera Start Data` | `CT, triggered:bool` |
 | `CameraSetExposureData` | `Camera Set Exposure Data` | `CT, exposure:dbl` |
 | `CameraGainData` | `Camera Gain Data` | `CT, gain:dbl` |
@@ -926,7 +944,7 @@ Payload dataclasses carry `LV_TYPEDEF: ClassVar[str]` (typedef label = `[wire.la
 | `CameraStreamData` | `Camera Stream Data` | `CT, simulation:bool, simulation_path:path, simulation_timer_ms:u32, acquisition_timeout_ms:i32 [5000]` |
 | `CamLogData` | `Cam Log Data` | `log:bool, path:path, max_lines:i32, max_count:i32` |
 | `ShowUIData` (bare) | `Show UI` | `show:bool` |
-| `CameraAutofocusData` | `Camera Autofocus Data` | `CT, autofocus_speed:enum:autofocus_speed ["Slow"], autofocus_method:enum:autofocus_method ["FFT"], duration_s:i32, z_min:dbl, z_max:dbl, step:dbl, subsampling:dbl, roi:i32[], acquisition_timeout_ms:i32 [5000]` (panel order, 04 §5.5) |
+| `CameraAutofocusData` | `Camera Autofocus Data` | `CT, autofocus_speed:enum:autofocus_speed ["Slow"], autofocus_method:enum:autofocus_method ["FFT"], duration_s:i32, z_min:dbl, z_max:dbl, step:dbl, subsampling:dbl, roi:i32[], acquisition_timeout_ms:i32 [5000]` (panel order, **confirmed** §0.1) |
 | `CameraRefocusData` | `Camera Refocus Data` | `CT, autofocus_method:enum:autofocus_method ["FFT"], refocus_method:enum:refocus_method ["Fin"], steps:i32, step_mm:dbl, fin_roi_width:i32, fin_roi_height:i32, oxyd_x_pos:i32, oxyd_y_pos:i32, oxyd_diam:i32, acquisition_timeout_ms:i32 [5000], wait_ms:i32, save_images:bool, folder:path` |
 | `ZGetSerialData` | `Z Stage Get Serial Data` | `type:bool` |
 | `ZSetSpeedData` | `Z Stage Set Speed Data` | `speed_mm_s:dbl` |
@@ -940,8 +958,9 @@ Payload dataclasses carry `LV_TYPEDEF: ClassVar[str]` (typedef label = `[wire.la
 
 ```python
 class PayloadCodec:                       # thread-safe after construction (immutable)
-    def __init__(self, enums: WireEnums, layout_overrides: Mapping[str, str] = {}, *, init_data_fallback: bool = True,
-                 encoding: str = "cp1252", templates: Mapping[str, bytes] = {}) -> None: ...  # ConfigError on bad layouts
+    def __init__(self, enums: WireEnums, layout_overrides: Mapping[str, str] = {}, *, init_data_fallback: bool = False,
+                 encoding: str = "cp1252", templates: Mapping[str, bytes] = {}) -> None: ...
+        # ConfigError on bad layouts and on a layout_overrides key matching no LV_TYPEDEF (compared lower-cased)
     def layout_of(self, cls: type) -> Layout: ...
     def decode(self, spec: CommandSpec, data: bytes) -> Any: ...
         # STRICT: unflatten with layout_of(payload); must consume exactly len(data) (else ProtocolError);
@@ -1166,6 +1185,8 @@ SERVER_INI_NAME = "alox_camera_server.ini"
 SERVER_INI_TEMPLATE: str                  # Appendix A, verbatim; parses to ServerConfig() defaults
 def load_server_config(path: Path, *, warn: Callable[[str], None]) -> ServerConfig: ...
     # missing file → ServerConfig() (INFO); invalid value → default + warning; unknown section or key → warning;
+    # keys of [wire.items]/[wire.size]/[wire.layout] are stripped and lower-cased (NI keys are case-insensitive); consumers
+    # compare enum ids / LV_TYPEDEF.lower() against them;
     # [wire.items] values split on commas (NIConfig.read_list), [wire.size] ints, [wire.layout] kept raw (validated by
     # wire.enums / wire.messages at start-up); [server] max_payload_mb → ServerOptions.max_payload_bytes (× 2**20);
     # empty [server] port → None; [stage] port_map "COM2=/dev/ttyUSB0, COM3=/dev/ttyS2" (commas: ';' starts a comment)
@@ -1251,16 +1272,21 @@ class Router:                             # called only from the TCP thread
     def route_frame(self, payload: bytes, conn_id: int) -> Request | None: ...
 ```
 
-`route_frame`: `decode_envelope`; on `EnvelopeError` with `code_value` and `notifier` both decoded, the code routed and
-`commands.get(name)` not None → history + a `Request` with `decode_error = {TRUE, 116, "Unflatten From String in
-alox_camera_server.vi"}`, timestamps 0, routed as below (WARNING log); any other `EnvelopeError` → ERROR log with hex excerpt, drop,
-`None`. Then `name = routing.name(code)`; `state.record_command(name)`; `route = routing.route(code)`; no route → WARNING "unknown
-command", and with `reply_unknown_commands` an error reply `{TRUE, 9506, "Unknown command <name>"}` with **`force=True`** (sent even
-when `send_error_replies` is FALSE, §7) of kind `spec.reply` when the name is known and its kind is not NONE, else ACK; else
-`spec = commands.get(name)`: `None` (a routed item that is not one of the 46 known names) → `Request(spec=None, data=None)`, nothing
-decoded (the worker's "no handler" path); otherwise `data = payloads.decode(spec, env.data)` (ProtocolError → `decode_error = {TRUE,
-91, "Variant To Data in alox_camera_server.vi"}`, WARNING log); camera route sets `receiving_ts = tick()`; `camera_put` / `z_put`
-(never block). Returns the routed `Request`.
+`route_frame(payload, conn_id)`:
+
+1. `env = decode_envelope(payload, enums)`. On `EnvelopeError`: if `code_value` and `notifier` are both set, the code is routed
+   (step 3) and `commands.get(routing.name(code_value))` is not None → WARNING log and continue at step 2 with a `Request` whose
+   `decode_error = {TRUE, 116, "Unflatten From String in alox_camera_server.vi"}`, timestamps 0, `data = None`; otherwise ERROR log
+   with a hex excerpt and return `None` (dropped, not recorded).
+2. `name = routing.name(code)`; `state.record_command(name)` (03 §3.3; unknown codes included).
+3. `route = routing.route(code)` is `None` → WARNING "unknown command"; with `reply_unknown_commands`:
+   `replies.error_reply(req, kind, {TRUE, 9506, "Unknown command <name>"}, force=True)` (sent even when `send_error_replies` is
+   FALSE, §7), kind = `spec.reply` when the name is known and its kind is not NONE, else ACK; return `None`.
+4. `spec = commands.get(name)`: `None` (a routed item that is not one of the 46 known names) → `Request(spec=None, data=None)`,
+   nothing decoded (the worker's "no handler" path). Otherwise `data = payloads.decode(spec, env.data)`; `ProtocolError` →
+   `decode_error = {TRUE, 91, "Variant To Data in alox_camera_server.vi"}`, WARNING log.
+5. Camera route: `receiving_ts = tick()` (the Z route keeps the client value); `camera_put` / `z_put` (never block); return the
+   `Request`.
 
 #### 3.4.4 `aloxcam/server/worker.py` (01 §5.3–5.4, §10.2–10.3, 06 §9.5)
 
@@ -1357,7 +1383,8 @@ Z commands still queued are dropped, 01 §6.3) → `tcp.stop()` → join the Z w
 reference or wait ends with 9510 and its reply is dropped), join again (≤ 2 s) → `camera_background.abort()` (the camera worker has
 stopped, so this thread may touch the sessions) → `close_hardware()` (exceptions logged) → stopped. `wait()` returns True after
 `close_hardware`, even if the second Z join timed out (daemon thread). If the camera worker itself never reaches `Exit` (blocked in
-a hardware call), `wait()` keeps returning False; `app.main` then gives up after `shutdown_timeout_s` with exit code 3.
+a hardware call), `wait()` keeps returning False; `app.main` then gives up `shutdown_timeout_s + 3` s after `shutdown_started` with
+exit code 3 (§3.4.7).
 
 #### 3.4.7 `aloxcam/app.py` and `aloxcam/__main__.py` — CLI
 
@@ -1938,8 +1965,8 @@ import-time dependency on WP5); WP4 imports WP3/WP5/WP6 only inside `app.py` fun
 
 ### 4.2 Acceptance tests per package
 
-Every package ships its tests; a package is done when its tests pass and `python -m pytest tests/<pkg>` needs nothing from a later
-package.
+Every package ships its tests; a package is done when its tests pass and `python -m pytest tests/<pkg>` needs nothing beyond the
+dependencies listed for it in §4.1.
 
 **WP1** — `tests/foundation/`
 - `test_errors.py`: `decorate` only when status TRUE (warnings untouched); `replace_source`; `merge_errors` order (error > warning >
@@ -1952,13 +1979,15 @@ package.
   concurrent writers (threads) never lose updates; `snapshot` copies.
 - `test_dispatch.py`: finish helpers with `RecordingReplies`/`RecordingEvents`: order A (decorated sent + logged), RAW_FIRST (raw
   sent, reply-out decorated + logged: nothing logged for typed replies), Z (no decoration, `command=None`); `reject_undecodable`
-  per reply kind; ACK suppression vs warnings in `RecordingReplies`.
+  per reply kind (`extra = spec.extra or spec.name`); ACK suppression vs warnings vs `force=True` in `RecordingReplies`; every
+  `ReplySink` method sets `req.replied`; requests built with explicit `spec`/`code` (no WP2 import).
 - `test_imagedata.py`: `ni_image_type` per dtype; width/height.
 
 **WP2** — `tests/golden/spec_vectors.py` + `tests/wire/`
 - `spec_vectors.py` (data only, imported read-only by WP4/WP7 tests): every worked hex example — 02 §7.5 (b) frame, 02 §8.6
   Get Heartbeat reply (57 bytes), the 9 rows of the 02 §8.6 `Response (Flattened)` table, 02 §5.4 heartbeat frame, 04 §3.2 path
-  vectors (empty, `C:\f.png`, Not-A-Path), the 18 rows of 04 §5.7. Templates keep `{tt}`/`{cc}` placeholders; `fill(template, **codes)`
+  vectors (empty, `C:\f.png`, Not-A-Path), the 18 rows of 04 §5.7, the 04 §5.7 size note (AF data with a 4-element ROI = 66
+  bytes), the 09 §7.4 log-line examples (shared with WP3). Templates keep `{tt}`/`{cc}` placeholders; `fill(template, **codes)`
   substitutes codes taken from the loaded enum table (tests must not hard-code provisional codes).
 - `test_lv_flatten.py`: every kind round-trips; cp1252 notifier bytes kept opaque (incl. 0x81); any non-zero bool byte reads TRUE;
   `dbl_2d` keeps 0×0 vs 0×2; every truncation of every vector raises `ProtocolError`; out-of-range integer writes raise.
@@ -1966,8 +1995,10 @@ package.
   `D:\alox\settings`; `localize_path_text` POSIX rules with `ALOX_DRIVE_D`.
 - `test_lv_variant.py`: bare-DBL synthetic header = 02 §7.5 (b) bytes; parse of synthetic cluster/enum/array headers; TD size < 4 and
   bit-15 sizes rejected; bad top index rejected.
-- `test_wire_enums.py`: packaged TOML loads, all tables provisional, 46 command labels; routing: 24 camera-range names + `Log` →
-  camera, 19 → Z, `… Run` unrouted; override-file and inline precedence; every validation error of §3.2.4; the 03 §3.5 synthetic order
+- `test_wire_enums.py`: packaged TOML loads; only `z_reference_method` is provisional; the 46 `camera_command` codes equal the
+  owner-answers §1 table (Get Heartbeat = 0, Exit = 14, Cam Autofocus Run = 22, Z Setup = 26, Z Do Reference = 44, Log = 45);
+  `tcp_datatype` has 5 items (Statut = 4); routing: 24 camera-range names + `Log` → camera, 19 → Z, the two `… Run` (inside the
+  camera range) unrouted; override-file and inline precedence; every validation error of §3.2.4; the 03 §3.5 synthetic order
   (Z Do Reference 8th) makes `routing_self_check` report exactly the 11 commands `Z Get Position` … `Z Cleanup`.
 - `test_messages.py`: `COMMANDS` has 46 entries matching 03 §2 (worker, reply kind) and 04 §5.1 (data mode); `CASES` excludes the two
   Run commands; all 18 vectors of 04 §5.7 decode/encode byte-exactly; Camera Init Data both orders + the residual ambiguity cases of
@@ -1975,7 +2006,10 @@ package.
   code 7 → `"#7"`; `ENUM size = 1` override shifts payloads as expected; `payload_from_mapping` conversions.
 - `test_protocol.py`: decode of the 02 §7.5 (b) frame (command `Z Set Min Limit`, 0.5, `"Z#17"`, ts 1000/1001/0) and byte-exact
   re-encode; the 57-byte Get Heartbeat reply via `response_frame`; the 9 `Response (Flattened)` rows via `flatten_reply`;
-  `parse_header` (N < 2, too large); attribute count ≠ 0 rejected; `parse_reply_value` inverse of `flatten_reply` for every kind.
+  `parse_header` (N < 2, too large); attribute count ≠ 0 rejected; `parse_reply_value` inverse of `flatten_reply` for every kind;
+  `EnvelopeError.code_value`/`notifier` set when they decoded (broken variant header, attribute count ≠ 0, payload < 16 bytes after
+  the header) and `None` when the notifier is truncated; a code beyond the item list decodes as a raw int; `flatten_reply` writes
+  an unencodable character of a source as `?`; `flatten_reply(NONE)` → `ValueError`.
 
 **WP3** — `tests/config/`
 - `test_niconfig.py`: 09 §6.1–6.2 rules (case-insensitive sections/keys, first occurrence wins, `;` comment, quoted value with `;`,
@@ -1983,13 +2017,20 @@ package.
   → `ConfigTypeInvalid`, string `\\` and `\0A` unescape, path not unescaped, BOM tolerated, `read_list`).
 - `test_folders.py`: missing `alox_setup.ini` → defaults + warning and file **not** created; empty value → default + warning;
   `--settings-dir` override; `$ALOX_EXE_DIR`.
-- `test_alox_ini.py`: `len(ALOX_INI_KEYS) == 53`; the 09 §5.6 reference file → `AloxSettings()`; per-key fallback with warning (no
+- `tests/config/data/real/`: copies of the five owner files `docs/answers/ini/*.ini`. `test_alox_ini.py` loads each one without
+  error and checks the values of `alox.ini` (port 503, core 1, `setLEDcam_I32` 0, HM `setLEDline_I32` 2 / `setBULBline_I32` 3,
+  `lightStatusInverter_BOOL` FALSE, Z `comport_I32` 4 / baud index 3 → 115200, decimal commas, first occurrence of duplicate keys)
+  and of `alox_GiGeIDS.ini` (GiGe plug types, `lightStatusInverter_BOOL` missing → TRUE).
+- `test_alox_ini.py`: `ALOX_INI_KEYS` equals the §3.3.3 table (53 rows: section, key, kind, default, target); the 09 §5.6 reference
+  file → `AloxSettings()`; `port_I32 = 70000` → 503 + warning; per-key fallback with warning (no
   chain effect, D4); baud index table and `115200` → 9600 + warning; `usb` variants → USB (D6); `setLEDcam_I32 ≠ 0` → LM plug type
   and `"LM"`; HM `frameratemax_DBL` ignored; missing file not created.
 - `test_server_ini.py`: `SERVER_INI_TEMPLATE` parses to `ServerConfig()`; each of the 15 compat keys overrides its field;
   `[wire.items]`, `[wire.size]`, `[wire.layout]`, `[stage] port_map` parsing; unknown keys warned.
 - `test_eventlog.py`: golden lines of 09 §7.4 with a fixed datetime (`29/10/2026 - 16:31:05.123 - ERR (Z STAGE)-(9405) : Z move out of
-  range (Move Absolute)` and the `INFO -(0) :  (Move Absolute: Z Reference resetted)` line); file names/folders per 09 §7.3; only
+  range (Move Absolute)`, the `INFO -(0) :  (Move Absolute: Z Reference resetted)` line and a camera line `… - ERR (LOW MAG)-Cam
+  Setup(<code>) : <source>Cam Setup (Setup)`; `Get Heartbeat` printed when `command` is left at its default); a character outside
+  `encoding` written as `?`; file names/folders per 09 §7.3; only
   status TRUE logged; CRLF + cp1252; append mode vs offset-0 mode (reproduces the 09 §7.3 example); info label fix/reproduce; decimal
   separator option; dirs created; unwritable folder swallowed + one diagnostic warning; concurrent writers keep whole lines.
 
@@ -1998,17 +2039,22 @@ package.
   send shuts the socket; `close()` drops later sends.
 - `test_reply.py`: ACK suppression by `send_error_replies`; warnings sent; typed replies always sent with the error; return values
   (ACK → err, typed → NO_ERROR); with `FixedClock` the Get Heartbeat reply equals the 57-byte golden vector (value 123456, sending
-  12345678); image reply copies the 3 request timestamps + pre/post; codec error → IMAGE `b""` + error.
+  12345678); image reply copies the 3 request timestamps + pre/post (also on error); codec error → IMAGE `b""` + error;
+  `force=True` sends an error ACK with `send_error_replies` FALSE; every method sets `req.replied`; `conn_id == 0` never sent.
 - `test_router.py`: camera route sets `receiving_ts`, Z route keeps the client value; unknown code → no reply, recorded in history;
-  `reply_unknown_commands` → ACK 9506; bad envelope dropped; payload decode error → `decode_error` 91; Run commands never routed.
+  `reply_unknown_commands` → ACK 9506 sent even with `send_error_replies` FALSE; envelope with code + notifier decoded → queued
+  with `decode_error` 116 (timestamps 0), other bad envelopes dropped; routed code without `CommandSpec` → `Request(spec=None,
+  data=None)`; payload decode error → `decode_error` 91; Run commands never routed.
 - `test_worker.py`: FIFO; `REQUEUE` goes to the tail and later commands run in between (05 §6.2); `Exit` stops and discards later
-  items; handler exception → 9500 finished + loop continues; `decode_error` → `reject_undecodable`; background stepper called when
-  idle.
+  items; handler exception → 9500 finished + loop continues; a handler that replies then raises → no second reply; no handler →
+  WARNING (+ forced 9506 with the switch); `decode_error` → `reject_undecodable`; background stepper called when idle; exceptions
+  in `after_each`/`background.step` logged, loop continues; `put` after `stopped` discarded.
 - `test_tcp.py`: header split across segments; idle client kept; mid-frame timeout closes; N < 2 closes; heartbeat frame ignored;
   heartbeat with payload closes (switch TRUE) / ignored (FALSE); Response/Image frames ignored; second client served after the first
   disconnects; `connected` flag; `bind()` on a busy port raises.
 - `test_runtime.py`: with fake handler tables: start/`Exit` chain (camera stops → Z receives `Exit` → link closed → hardware closed →
-  `wait()` True); `request_shutdown` path; replies after shutdown dropped.
+  `wait()` True); `request_shutdown` path; replies after shutdown dropped; Z handler blocked past `shutdown_timeout_s` →
+  `abort_waits` called, `wait()` True; `shutdown_started` flag.
 - `test_app.py`: argument parsing; `--check-config` on a temp tree exits 0 and prints the routing table; no `--simulate` → exit 2;
   `--write-settings-template` refuses to overwrite; `--ready-file` content.
 
@@ -2017,11 +2063,13 @@ package.
   referencing and `#7`; macros; not connected → −4; `inject_failure`.
 - `test_z_controller.py`: set-up sequence on SimStage (session filled, FNL when unreferenced, VEL at INI speed) and on failure (session
   still written, error translated); no-axis texts (100); `vel`/`jon` read `ERR?`; `general_wait` timeout −7 then additional wait;
-  `check_axis_reference` both branches; `translate` appends `"\nGCS Error: <text>"`.
+  `check_axis_reference` both branches; `translate` appends `"\nGCS Error: <text>"`; a code discarded by the connect purge is
+  logged (Z22); `cancel_waits` ends `wait_ready`/`general_wait` with 9510 within one poll; `close()` waits for a running exchange.
 - `test_z_handlers.py` (one test per command, `RecordingReplies`/`RecordingEvents`): reply kind/value/error and log label for all 19;
   `restart_dh_macro` and `implicit_z_reinit` both values; 9405 inclusive bounds, reversed limits, NaN; info line on re-init; `Z Stop`
   then `Z Get Status` → BOOL FALSE + 10 "Controller error"; `Z Cleanup` error ACK (suppressed by default) vs success with the switch
-  off; `Z Set Min Limit` NaN → error 1; `Exit` → `STOP`.
+  off; `Z Cleanup` resets `state.z_inited`; `Z Move …` sets `state.z_inited` from the reference check; `implicit_z_reinit` FALSE with
+  a failing `FRF?` → that error, no re-init; `Z Set Min Limit` NaN → error 1; `Exit` → `STOP`.
 
 **WP6** — `tests/camera/`, `tests/imaging/`
 - `test_png.py`: write/read round trip gray 8/16; hand-made RGB/RGBA files (zlib) → arrays; each filter type 0–4; unsupported formats.
@@ -2038,8 +2086,9 @@ package.
   2 000 000), HM MaxDBL vs LM `fr_calc` and `exposure_sets_max_framerate`, replaced source on error; Set Gain I64 rounding half-even
   (2.5 → 2); Get Acquisition Status / Cam Stop before set-up → FALSE/OK; Software Trigger always OK; Set Led truth table (05 §9.2) and
   wait only when required; Get Led XOR; Stream Next Image: `REQUEUE` then IMAGE with custom data; temperature failure with both switch
-  values; Set FlatField with both `flatfield_check_on_set` values; AF/RF stubs → 9507 order A + focus fields; Get AF Data 0×0 / progress
-  0; `Exit` forwards an internal `Exit`.
+  values; Set FlatField with both `flatfield_check_on_set` values; AF/RF stubs → 9507 order A, ACK sent with `send_error_replies`
+  FALSE (forced) + focus fields; Cam Setup with `number_of_buffers = 7` → WARNING; Get AF Data 0×0 / progress 0; `Exit` forwards an
+  internal `Exit`; `make_sessions` gives independent state machines.
 
 **WP7** — `tests/tools/`, `tests/integration/`
 - `test_replay_client.py`: script parsing (vars, inline tables, `await`, `poll`, `raw_hex`, `data_hex`); expectation evaluation;
@@ -2055,8 +2104,9 @@ package.
 | 02 §8.6 table | 9 `Response (Flattened)` encodings | WP2 `test_protocol` |
 | 02 §5.4 | heartbeat frame `00 00 00 02 tt tt` | WP2 `test_protocol` |
 | 04 §3.2 | 3 path encodings | WP2 `test_lv_path` |
-| 04 §5.7 | 18 payload data encodings | WP2 `test_messages` |
+| 04 §5.7 | 18 payload data encodings (+ the 66-byte AF size note) | WP2 `test_messages` |
 | 05 §6.3 | 9009 source text | WP6 `test_acquisition` |
+| 08 §5.3 / 03 §8 | `{TRUE, 9405, "Z move out of range"}`, 10 `"Controller error"` after `Z Stop` | WP5 `test_z_handlers`, WP7 integration |
 | 09 §5.6 | reference `alox.ini` → defaults | WP3 `test_alox_ini` |
 | 09 §7.3–§7.4 | log lines and the offset-0 overwrite example | WP3 `test_eventlog` |
 | 03 §3.5 | synthetic order → 11 unreachable Z commands | WP2 `test_wire_enums` |
@@ -2093,7 +2143,8 @@ brackets; "none" = no reply within `no_reply_wait_s`):
 9. `Cam Get Image` HM [none]; `Cam Get Images Array` [none]; `Cam Software Trigger` HM [ACK OK].
 10. `Cam Set FlatField` HM {enable, `${ffc}`, `${dfc}`, 1.0} [ACK OK] → `Cam Stream Next Image` HM [`flatfield = "TRUE"`].
 11. `Cam Set Led` HM TRUE [ACK OK] → `Cam Get Led` HM [TRUE].
-12. `Cam Autofocus` HM, `Cam Refocus` HM [none: error ACK 9507 suppressed]; `Cam Get Autofocus Data` [DBL2D shape 0×0];
+12. `Cam Autofocus` HM, `Cam Refocus` HM [ACK `{TRUE, 9507, source_contains "Cam Autofocus"}` / `"Cam Refocus"`: the stub reply is
+    forced, §7]; `Cam Get Autofocus Data` [DBL2D shape 0×0];
     `Cam Get Autofocus Progress` [0.0]; `Cam Autofocus Run`, `Cam Refocus Run` [none: not routed].
 13. `Z Get Serial {type=false}` before set-up [STR "", OK]; `Z Setup` [ACK OK]; `Z Get Serial {type=true}` [STR = sim identity];
     `Z Get Status` [TRUE]; `Z Get Error` [STR ""].
@@ -2118,7 +2169,9 @@ devices and SimStage are closed; `state.commands_history[0] == "Exit"` and the u
 `[compat] send_error_replies = TRUE`, `reply_unknown_commands = TRUE`: `Z Move Absolute 30` → ACK `{TRUE, 9405, "Z move out of
 range"}`; `Cam Autofocus` → ACK `{TRUE, 9507, source_contains "Cam Autofocus"}`; unknown code → ACK 9506; `Cam Set Exposure` with
 `data_hex = "0001"` → ACK `{TRUE, 91, source_contains "Variant To Data"}`; `Cam Stream Next Image` on a cleaned-up camera → IMAGE
-`b""` with error −1074360316 (typed replies are always sent); `Z Cleanup` → ACK error −4; `Exit`.
+`b""` with error −1074360316 (typed replies are always sent); `Z Cleanup` → ACK error −4; `Exit`. Second case
+`test_unknown_commands_only` (`reply_unknown_commands = TRUE` alone): unknown code → ACK 9506; `Z Move Absolute 30` → none;
+`Cam Set Exposure` with `data_hex = "0001"` → none (91 ACK suppressed).
 
 ### 5.4 Other integration tests
 
@@ -2136,8 +2189,8 @@ range"}`; `Cam Autofocus` → ACK `{TRUE, 9507, source_contains "Cam Autofocus"}
 
 | # | Ambiguity (spec) | Setting | Default chosen |
 |---|---|---|---|
-| 1 | Order, codes and representation of every wire enum (Q2, 04 §6, 10 R1) | `data/wire_enums.toml`; `[wire] enums_file`, `[wire.items]`, `[wire.size]` | provisional tables of §3.2.4 (Get Heartbeat = 0, camera range first, `Log`, Z range ending with `Z Do Reference`, Run items last; all U16) |
-| 2 | Cluster order / integer widths of payloads: `Camera Init Data` (04 §7.1), AF/RF (A4/A5), Z wait/joystick (A6), `Subsampling` (A7) | `[wire.layout] <typedef label> = attr:kind, …`; `[wire] init_data_fallback` | `LV_LAYOUT` of §3.2.5 (Unbundle order for Init Data with fallback ON; panel order elsewhere; integers I32) |
+| 1 | Order, codes and representation of every wire enum (Q2, 04 §6, 10 R1) | `data/wire_enums.toml`; `[wire] enums_file`, `[wire.items]`, `[wire.size]` | tables of §3.2.4: confirmed orders (owner answers); U16; `z_reference_method` provisional |
+| 2 | Cluster order / integer widths of payloads: `Camera Init Data` (04 §7.1), AF/RF (A4/A5), Z wait/joystick (A6), `Subsampling` (A7) | `[wire.layout] <typedef label> = attr:kind, …`; `[wire] init_data_fallback` | `LV_LAYOUT` of §3.2.5 (panel order everywhere, confirmed; fallback OFF; integers I32 assumed) |
 | 3 | String encoding (02 C12) | `[wire] encoding`, `[logging] encoding` | `cp1252` |
 | 4 | Tick Count epoch (01-Q5, Q32 e) | `[server] tick_source` | `monotonic` |
 | 5 | Image serialisation (02 §8.5, Q6) | `[image] codec`, `nivision_library` | `provisional` |
@@ -2159,14 +2212,20 @@ range"}`; `Cam Autofocus` → ACK `{TRUE, 9507, source_contains "Cam Autofocus"}
 
 Internal defects and out-of-contract input (10 §6 rules), as recommended by the cited items: no TCP queue, unbounded worker queues and
 re-enqueue on the internal path (01 A1–A3, 02 D11); reads back to back, no 50 ms gap or 2 s listen (A4, D8, D9); always back to
-listening, `connected` reset (A5, A6, D3, D4); undecodable envelopes dropped, undecodable payloads answered with error 91 and never
-executed (A20, D7, 03 C4, 04 T1/T6/T8); mid-frame timeout and bad `N` close the connection (D5, D6); write failure closes the
+listening, `connected` reset (A5, A6, D3, D4); undecodable envelopes answered with error 116 when the code and notifier decoded
+(02 §7.6), else dropped; undecodable payloads answered with error 91 and never executed (A20, D7, 03 C4, 04 T1/T6/T8); mid-frame timeout and bad `N` close the connection (D5, D6); write failure closes the
 connection, stale replies dropped (A21, D10, D12); internal Run commands never routed (03 C16); bounded, time-stamped histories, internal
 steps not recorded (A11–A13); one locked `ServerState` and one `ZController` (A16, 08 Z18); hardware closed on `Exit`/signal (A10, 05
 #10); folders resolved once, INI files never created, per-key INI fallback with warnings (09 D2–D4, D9); event-log fixes D10, D11, D13,
 D15 (switchable for byte comparison, §6 row 13); per-camera acquisition state (05 #3); camera re-open closes the old session (05 #9);
 `Cam Start` uses the camera's own plug type (05 #12); `Cam Stop` sets the acquisition state (05 #11); `Z Do Reference` waits with
-`#7` (08 Z13, switchable §6 row 11). Kept as LabVIEW (client-visible): log label `"Get Z Referenced"` for `Z Do Reference` (08 Z15,
+`#7` (08 Z13, switchable §6 row 11); `Z Cleanup` resets the internal `z_inited` (08 Z9); the error code discarded by the connect
+purge is logged (08 Z22); a running Z wait is cancelled (9510) only when the shutdown chain times out. Reply rules decided here:
+**`reply_unknown_commands` = TRUE sends its 9506 ACK even when `send_error_replies` = FALSE** (the switch would otherwise do nothing
+on its own; 10 §6 ties only malformed-input and focus-validation replies to `send_error_replies`); **the Phase-1 stubs (9507) always
+reply** (fixed decision: a documented error reply; there is no LabVIEW behaviour to reproduce); both are the only uses of
+`force=True`. Not applied in Phase 1: 05 #5 (stream simulation without a set-up camera), since `SimCameraBackend` gives a
+hardware-free set-up. Kept as LabVIEW (client-visible): log label `"Get Z Referenced"` for `Z Do Reference` (08 Z15,
 logs may be parsed, Q38); `Z Move …` neither waits nor reads `ERR?` (03 C13); `Z Set Speed` leaves the settings unchanged (03 C14).
 
 ---
@@ -2207,10 +2266,10 @@ implicit_z_reinit = TRUE
 [wire]
 enums_file =
 encoding = cp1252
-init_data_fallback = TRUE
+init_data_fallback = FALSE
 
 [wire.items]
-; camera_command = Get Heartbeat, Show UI, Exit, ...
+; camera_command = Get Heartbeat, Cam Setup, Cam Start, ...
 
 [wire.size]
 ; camera_command = 2
@@ -2257,7 +2316,7 @@ stage_min_mm = 0
 stage_max_mm = 25
 stage_initially_referenced = FALSE
 stage_reference_s = 0.2
-stage_identity = "(c) aloxcam SimStage, C-863.11-SIM, 0000000001, 0.0.0"
+stage_identity = "(c) aloxcam SimStage, C-663-SIM, 0000000001, 0.0.0"
 stage_dh_macro_s = 0
 ```
 
