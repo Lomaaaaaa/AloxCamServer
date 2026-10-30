@@ -1,0 +1,70 @@
+# Phase 1 error-reply script: the server runs with [compat] send_error_replies = TRUE and reply_unknown_commands = TRUE.
+# docs/phase1-design.md §5.3. Every error ACK is sent; typed replies always carry their error. Ends with Exit.
+
+[session]
+host = "127.0.0.1"
+port = 503
+timeout_s = 10.0
+no_reply_wait_s = 0.25
+mask = ["tick"]
+
+[vars]
+cam_hm = "cam0"
+
+[[step]]
+command = "Get Heartbeat"
+expect = { reply = "U32", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Setup"
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "out of range: the 9405 ACK is sent"
+command = "Z Move Absolute"
+data = { pos_mm = 30.0 }
+expect = { reply = "ACK", error = { status = true, code = 9405, source = "Z move out of range" } }
+
+[[step]]
+name = "phase-1 stub"
+command = "Cam Autofocus"
+data = { camera_type = "High Mag." }
+expect = { reply = "ACK", error = { status = true, code = 9507, source_contains = "Cam Autofocus" } }
+
+[[step]]
+name = "unknown command: 9506"
+code = 32767
+expect = { reply = "ACK", error = { status = true, code = 9506, source = "Unknown command #32767" } }
+
+[[step]]
+name = "undecodable Command Data: 91"
+command = "Cam Set Exposure"
+data_hex = "0001"
+expect = { reply = "ACK", error = { status = true, code = 91, source_contains = "Variant To Data" } }
+
+[[step]]
+name = "setup HM"
+command = "Cam Setup"
+data = { camera_type = "High Mag.", camera_name = "${cam_hm}", number_of_buffers = 5, continuous_mode = true }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "cleanup HM"
+command = "Cam Cleanup"
+data = { camera_type = "High Mag." }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "stream on a cleaned-up camera: empty image with the error"
+command = "Cam Stream Next Image"
+data = { camera_type = "High Mag.", simulation = false }
+expect = { reply = "IMAGE", value = "", error = { status = true, code = -1074360316, source_contains = "invalid camera session" } }
+
+[[step]]
+name = "RMC? on the closed link: -4"
+command = "Z Cleanup"
+expect = { reply = "ACK", error = { status = true, code = -4, source_contains = "not connected" } }
+
+[[step]]
+command = "Exit"
+expect = { reply = "none", connection = "closed" }

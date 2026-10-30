@@ -1,0 +1,23 @@
+# Smoke test: a heartbeat frame, Get Heartbeat, then Exit (the server stops).
+# python tools/replay_client.py tools/scripts/smoke.toml --port <port>
+
+[session]
+host = "127.0.0.1"
+port = 503
+timeout_s = 10.0
+no_reply_wait_s = 0.2
+mask = ["tick"]
+
+[[step]]
+name = "heartbeat frame (ignored by the server)"
+heartbeat_frame = true
+expect = { reply = "none", connection = "open" }
+
+[[step]]
+command = "Get Heartbeat"
+expect = { reply = "U32", error = { status = false, code = 0, source = "" } }
+
+[[step]]
+name = "Exit: no reply, the server closes the connection"
+command = "Exit"
+expect = { reply = "none", connection = "closed" }
