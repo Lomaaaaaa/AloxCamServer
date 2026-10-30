@@ -10,6 +10,7 @@ dist/
 # Local runtime output
 logs/
 *.log
+tools/z_stage_report_*
 
 # Claude Code agent worktrees
 .claude/worktrees/

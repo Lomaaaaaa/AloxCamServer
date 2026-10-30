@@ -2,8 +2,8 @@
 
 This file records the decisions taken while implementing [phase2-design.md](phase2-design.md) (§3 modules, §4.2 replay
 script, §5 tests) where the design left a point open or where the implementation differs. The phase 1 notes
-([phase1-notes.md](phase1-notes.md)) still apply. `tools/z_stage_check.py` (design §4.1) is not part of this work; the
-API it needs is summarised at the end.
+([phase1-notes.md](phase1-notes.md)) still apply. `tools/z_stage_check.py` (design §4.1) came afterwards: the API it
+needed is summarised below, and its own decisions are in the last section, "Lab tool `tools/z_stage_check.py`".
 
 ## Deviations from the design
 
@@ -159,3 +159,111 @@ move runs, `MOV` with the joystick on (error 51?), `VEL 0` (error 17?), `#7` whi
 every `Z Setup`, macro behaviour while commands run, the serial number LabVIEW returns, and how the Moxa virtual COM
 port behaves on a network drop (−2 / −3 / −7). `phase2_z_stage.toml` marks the steps that record these as "lab
 finding".
+
+## Lab tool `tools/z_stage_check.py` (design §4.1)
+
+The tool runs the server's own `PiSerialStage` / `GcsSerialLink` (and `ZController.setup` for `--setup-twice`), so the
+frames are exactly the server's. Its module docstring and `--help` list every frame; README "Check the Z stage" gives
+the owner's commands.
+
+### Information mode
+
+1. **Frames.** The purge (`XXX`, 10 ms, `*idn?`, `err?`) as part of opening, then `SAI?` first (it arms the "axis not
+   connected" pre-check), `*IDN?`, `ERR?`, `CST? 1`, `SVO? 1`, `RON? 1`, `TRS? 1`, `LIM? 1`, `TMN? 1`, `TMX? 1`,
+   `FRF? 1`, `POS? 1`, `VEL? 1`, `JON? 1`, `RMC?`, `MAC? DH`, `MAC? HOME`, `#5`, `#7`, `ERR?`. Three additions to the
+   design's list, all read-only: `#5` (the motion tests depend on it, so it is proven first), `#7` (design §6: is the
+   ready byte followed by an LF? A following LF shows up as a dropped frame and is reported), and a final `ERR?` (was
+   any query refused?). After a query that gets no usable answer, one more `ERR?` reads the controller's reason (only
+   the last error is kept, so it must be read at once). Three timeouts in a row stop the queries; a link error (−2 /
+   −3 / −4) too. A test compares the fake's received frames with `INFO_FRAMES` exactly.
+2. **The purge's code** is reported with its meaning: 2 normal, 0 "XXX latched nothing" (a finding), any other code
+   "an error was pending" (08 Z22).
+3. **Findings** derived from the answers: Q9 (`*IDN?`, `CST? 1`, `TRS? 1` / `LIM? 1` and so FRF or FNL), Q10 (`MAC?`
+   texts compared with owner-answers §5, `RMC?`), Q35 test 7 (what the Python `Z Get Serial` returns: the 3rd `*IDN?`
+   field), design §6 (raw answer formats).
+
+### Report
+
+4. `z_stage_report_<yyyymmdd-hhmmss>.json` and `.txt` (the design says `<date>`; the time is added so that the info
+   run and the motion run do not overwrite each other), next to the tool by default (`tools\`, ignored by git), or
+   `--out <folder>` / `--out <name>.json`; the current folder when the tools folder is not writable. The JSON holds the
+   versions (tool, aloxcam, Python, pyserial, platform, git commit), the command line, every query with its raw
+   answer, every motion test with its plan, samples (`[t, moving, POS?]`) and answer, every emergency stop and
+   restore step, the operator's answers, and **every raw frame** with a time stamp, direction, escaped text and hex.
+   The link's own `frames` deque keeps only 512 entries, so the tool replaces it with a deque subclass that copies
+   each frame into its own log (this relies on `GcsSerialLink._record` appending to `frames`). The report is also
+   written after a failure (busy port, timeout, Ctrl+C); the last console lines name the file to send back.
+5. **Exit codes:** 0 the tool ran to the end (findings, failed queries and refused tests are in the report), 1 it
+   could not connect, lost the link or the motion tests were stopped (`#24`), 2 usage error (nothing opened, no
+   report).
+
+### Motion tests
+
+6. **Order:** POS? during a move (Q35 test 2, the gentlest; it also proves the watch loop), STP 1 during a move
+   (test 1), MVR while a move runs (test 3), MOV with the joystick on (test 4), VEL 0 (test 5), then, only with
+   `--setup-twice`, Z Setup twice (test 6 / Q11) as the last and most invasive one. Test IDs in the report keep the
+   Q35 numbers.
+7. **Preconditions** (else the motion phase is refused and nothing beyond the information is sent): `SAI?` has axis 1,
+   servo on, referenced (no reference move is ever made to fix that: run LabVIEW's `Z Setup` first), joystick off,
+   `#5` = 0, `HOME` not running, a controller speed ≥ 0.05 mm/s, the start position inside `[TMN?, TMX?]` and the
+   `alox.ini` range. `JON? 1` is only needed by the joystick test (a missing joystick must not block the others).
+   After the operator's `yes`, `POS? 1` and `#5` are read again: a stage that moved meanwhile refuses the tests.
+8. **Window** = `[TMN?, TMX?]` ∩ `[min, max]` of `zmin_DBL` / `zmax_DBL` ∩ start ± `--window`. A test move travels
+   to the side with more room, at most `--window`, and must last at least 0.6 s (so that `POS?` is read during it):
+   it needs `max(0.2 mm, 0.6 s × speed)` of room, else that test is refused with the numbers. STP and MVR are sent
+   after 40 % of the move; MVR's test moves ⅔ of the travel then adds ⅓, so both possible answers (target + d,
+   position + d) stay inside the window and are about 0.4 mm apart with the defaults. The joystick test moves 0.2 mm.
+9. **Speed:** `--speed` (default 1 mm/s) must be ≥ 0.05; on the real stage ≤ 5 mm/s and never above the controller's
+   current `VEL?` (the tool uses the lower one and says so). `--window` ≤ 10 mm on the real stage. `--fake` lifts the
+   upper caps (rehearsal at a higher speed). The test speed is set (`VEL`, `ERR?`, `VEL? 1` checked) only once the
+   first test or the move back is confirmed, so declining everything changes nothing; the original speed is restored
+   at the end (with 4 decimals, as every `VEL` frame).
+10. **Watch loop:** `#5` and `POS? 1` every 50 ms until the stage stands still (at the target ± 0.01 mm, or 0.3 s
+    after the command for a refused move). A position more than 0.05 mm outside the window (this also catches a
+    `HOME` started by digital input 1, or a joystick drift) or a timeout of 3 s + 3 × the expected duration sends
+    `#24` and stops the tests. STP gets 1 s to stop the stage, then the tool sends `#24` itself and records that STP
+    did not stop it; `ERR?` is read right after `STP 1`, because a later `#24` would replace a refusal code.
+11. **Every test** starts with `ERR?` (clears an older error, recorded as `pending_error_before`), `POS? 1` and `#5`,
+    before its `yes`. Answers: only `yes` (any case) runs a test; `quit`, `q`, `stop` or the end of input skips the
+    rest; anything else, a bare Enter included, skips that test. `--setup-twice` needs a second `yes` after a warning.
+12. **Stop on anything abnormal.** Once armed (the operator's first `yes`), Ctrl+C (also at a prompt), any exception,
+    a timeout or a window exit sends `#24` at once. When the link itself failed (−2 / −3 / −4), or the first `#24`
+    could not be written, the port is re-opened (purge included) and `#24` sent again, twice at most: a write into a
+    dead socket can "succeed". If the tool had switched the joystick on, `JON 1 0` follows at once (`#24` may not stop
+    a joystick drift). Then up to 3 s of `#5` polling confirm the standstill; if the stop cannot be confirmed the
+    operator is told to switch the controller off. After a stop the stage is never moved back.
+13. **End** (always, also after a stop): joystick off if the tool switched it on (`JAX 1 1 1`, `JON 1 0`, `ERR?`,
+    `JON? 1`), original speed, then `DH`: when it ran at the start (`RMC?` = `DH` or `HOME`) and is not running now
+    (STP / `#24` stop it), `MAC START DH` + `RMC?` + `ERR?` — automatically after a normal end (and said so), only
+    after a typed `yes` after a stop (LabVIEW restarts it anyway at its next `Z Get Status` / `Z Stop`). The operator
+    is warned that `DH` starts `HOME` (a move to 0 mm) when digital input 1 is high. A Ctrl+C during these steps
+    skips the rest and says what was not restored. The move back to the start position is offered (`yes`) only
+    after a normal end, at the test speed, with the watch loop on the path between the two positions.
+14. **`--setup-twice`** runs `ZController(stage, StageOptions(ready_timeout_s=180, port_map={COM<n>: port}))
+    .setup(ZStageSettings(..., speed = test speed))` twice: the server's defaults (`always_reference = TRUE`, FNL),
+    so it measures the Python path — durations, the reference frames sent, how often `#7` answered busy (design §6
+    "`#7` while referencing") — not LabVIEW's hidden option (Q35 test 6 still needs the LabVIEW server). It passes a
+    plain `sleep` function so that `ZController` does not wait on a `threading.Event`, which Ctrl+C may not interrupt
+    on Windows. The window does not apply during it (the stage goes to its negative limit); the move back offered
+    afterwards can be long at 1 mm/s.
+15. **`--yes` only with `--fake`.** `--fake` runs an in-process `FakeC663Server` (0–100 mm, `DH` running, referenced
+    by FRF at 50 mm); `--port` is then refused, `--alox-ini` still limits the window.
+
+### Limits (what the tool cannot do)
+
+- It cannot see or block digital input 1: a `HOME` started by the button is only stopped by the window check (within
+  one 50 ms poll plus the 0.05 mm margin). It does not read `DIO?` (the fake does not implement it).
+- On Windows a Ctrl+C during a blocking serial read is acted on when the read returns (at most the answer timeout).
+- `JAX` is not restored to an earlier value (it is not read; LabVIEW always sends `JAX 1 1 1`).
+- The POS? / MVR / STP verdicts use thresholds (0.01 mm on target, ⅓ of the distance between the two MVR answers);
+  the samples and frames in the report allow a second look.
+
+### Tests
+
+`tests/tools/test_z_stage_check.py` runs `main()` in process with **virtual time**: the tool's `sleep` /
+`monotonic` and the fake's clock are one object, and `zstage.fake_probe.SyncedLink` makes a write return once the fake
+has processed it, so a 1 mm move at 1 mm/s takes no real time. Faults are injected from the virtual `sleep` while the
+stage moves: Ctrl+C, a `HOME` start (window exit), a dropped answer (−7), a pulled cable (`disconnect()`, plain
+`GcsSerialLink`: the port is re-opened and `#24` arrives on the second connection), a move timeout, Ctrl+C with the
+joystick on. Two subprocess tests run `python tools/z_stage_check.py` without PYTHONPATH (the tool adds `<repo>/src`
+itself): `--fake` (information) and `--fake --motion --yes` in real time (about 4 s, marked `slow`).

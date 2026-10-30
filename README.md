@@ -131,6 +131,47 @@ LabVIEW PI driver, while the cameras stay simulated. It uses `pyserial`, not PI'
 - Every frame exchanged with the controller is logged at DEBUG on the `aloxcam.zstage.serial` logger
   (`--log-level DEBUG`), in the diagnostic log.
 
+### Check the Z stage
+
+`tools/z_stage_check.py` checks the controller through the server's own serial code and writes a report to send back
+([docs/phase2-design.md](docs/phase2-design.md) §4.1). It needs Python 3.11+ and pyserial only, no install of
+`aloxcam`. Run it on the PC that controls the stage, in a Command Prompt in the repository folder, **with the LabVIEW
+camera server stopped** (it keeps the COM port open). `D:\alox\settings` is the settings folder of `alox_setup.ini`;
+`--port COM4` can replace `--alox-ini`.
+
+1. Once: `py -3 -m pip install pyserial` (or use `.venv\Scripts\python` instead of `py -3` below if you made the
+   virtual environment above).
+2. **Information first.** Read-only: nothing moves, no setting changes, no macro is stopped.
+
+   ```bat
+   py -3 tools\z_stage_check.py --alox-ini D:\alox\settings\alox.ini
+   ```
+
+   Opening the port sends the same purge as LabVIEW (`XXX`, `*idn?`, `err?`); then it reads `SAI?`, `*IDN?`, `ERR?`
+   (this clears the controller error; the value read is reported), `CST? 1`, the servo, reference and switch states,
+   the travel range, the position and speed, `JON? 1`, `RMC?`, the `DH` and `HOME` macro texts, `#5` and `#7`.
+   `--help` lists every frame.
+3. **Motion tests, only when the stage area is safe**: nothing on or near the stage that a move can hit, and the
+   controller power switch within reach.
+
+   ```bat
+   py -3 tools\z_stage_check.py --alox-ini D:\alox\settings\alox.ini --motion
+   ```
+
+   The tool prints the start position, the allowed window (the controller range, the `alox.ini` `zmin_DBL` /
+   `zmax_DBL`, and ±1 mm around the start: `--window`) and the test speed (1 mm/s: `--speed`, at most 5). It explains
+   each test of questionnaire Q35 (`POS?` and `STP 1` during a move, `MVR` while a move runs, `MOV` with the joystick
+   on, `VEL 0`) and runs it only after you type `yes`. Ctrl+C, an error or a timeout sends `#24` (stop all axes) at
+   once. At the end the tool offers to move the stage back to its start position, restores the speed and restarts
+   `DH` if it was running. Do not press the HOME button during the tests: while `DH` runs, it moves the stage to
+   0 mm. `--setup-twice` adds the server's `Z Setup` twice; it references the axis, so the stage drives to its
+   negative limit switch.
+4. **Send back** the `z_stage_report_<date>-<time>.json` file named on the last lines of the output (written in
+   `tools\`, or in `--out <folder>`). The `.txt` next to it is the same report, easier to read.
+
+`py -3 tools\z_stage_check.py --fake --motion --yes` rehearses everything against an emulated controller, without
+hardware.
+
 ### Rehearsal with the fake controller
 
 `aloxcam.zstage.fake_c663` emulates a C-663 on a TCP port (the simulated stage behind the real serial protocol). It
