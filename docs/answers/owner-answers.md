@@ -58,11 +58,17 @@ Camera Plug Type ring/enum values. The INI uses the strings `"USB"` and `"GiGe"`
 
 ## 2. Cluster order
 
-`typedef_ext_camera_init_data.ctl` (the `Cam Setup` payload) is **Camera Type, Camera Name, Number of buffers, Continuous Mode**
-(cluster order 0–3) [`camera_init_data_cluster_order.png`](camera_init_data_cluster_order.png). This is the front-panel order.
-The alternative order inferred from the main VI's Unbundle (docs/04) is **wrong** and must be dropped.
+Cluster order, as shown by *Reorder Controls in Cluster* (screenshots in [`clusters/`](clusters/)):
 
-The other clusters asked in Q33 (autofocus, refocus, Z wait, joystick) are still open.
+| Typedef | Order (0 → n) | vs. docs/04 |
+|---|---|---|
+| `typedef_ext_camera_init_data.ctl` (`Cam Setup`) | Camera Type, Camera Name, Number of buffers, Continuous Mode | **Differs**: docs/04 chose the main VI's Unbundle order (Camera Type, Continuous Mode, Number of buffers, Camera Name), which is **wrong**. The front-panel order is correct. |
+| `typedef_ext_camera_autofocus_data.ctl` | Camera Type, Autofocus Speed, Autofocus Method, Duration (s), Z Min, Z Max, Step, Subsampling, ROI, Acquisition Timeout (ms) | Matches (panel order) |
+| `typedef_ext_camera_refocus_data.ctl` | Camera Type, Autofocus Method, Refocus Method, Steps, Step (mm), Fin ROI Width (pixels), Fin ROI Height (pixels), Oxyd X Pos (pixels), Oxyd Y Pos (pixels), Oxyd Diam (pixels), Acquisition Timeout (ms), Wait (ms), Save Images, Folder | Matches (panel order) |
+| `typedef_ext_z_move_wait_data.ctl` | Add. Wait (ms) [default 0], Polling Cycle (ms) [default 10], Add. Wait Only | Matches (panel order) |
+| `typedef_ext_z_joystick_data.ctl` | Joystick ID [default 1], Joystick Axis [default 1] | Matches (panel order) |
+
+Still unknown: the **representation** of the integer fields (I32 assumed, as in docs/04). The network capture will show it.
 
 ## 3. VI properties
 
@@ -166,6 +172,7 @@ Ordered by value:
 
 1. **A network capture (Q4)** or **golden vectors** exported on the LabVIEW machine (docs/04 §7.3). Either one settles the
    variant byte format, the NI image format and whether error replies are sent.
-2. **Q33**: cluster order of the autofocus, refocus, Z wait and joystick payloads (same screenshot method as Cam Init Data).
-3. **Q31**: the client VIs (the "synchronous calls" folder).
-4. The Z Do Reference enum, Q35 (Z stage test session) and Q34 (NI MAX camera settings).
+   The owner plans to record one with RawCap at the fab.
+2. The Z Do Reference enum and the integer representations (I32 assumed). The capture settles both.
+3. Q35 (Z stage test session) and Q34 (NI MAX camera settings).
+4. Q31 (client VIs): dropped. It would need an HTML printout of the client; the capture gives most of the same information.
