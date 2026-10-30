@@ -136,7 +136,7 @@ class Folders:
 class CompatSwitches:
     """The complete ``[compat]`` registry of 10 §6; defaults = LabVIEW-observable behaviour."""
 
-    send_error_replies: bool = False
+    send_error_replies: bool = True     # LabVIEW sends error ACKs (network capture, capture-analysis.md)
     reply_unknown_commands: bool = False
     listen_address: str = "127.0.0.1"
     inbound_pause_ms: int = 0

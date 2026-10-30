@@ -55,7 +55,7 @@ error_history = 1000
 temperature_history = 10000
 
 [compat]
-send_error_replies = FALSE
+send_error_replies = TRUE
 reply_unknown_commands = FALSE
 listen_address = 127.0.0.1
 inbound_pause_ms = 0

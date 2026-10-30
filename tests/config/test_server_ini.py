@@ -25,7 +25,7 @@ DESIGN = Path(__file__).resolve().parents[2] / "docs" / "phase1-design.md"
 
 #: Field → (INI text, expected value) giving a non-default value for each of the 15 [compat] switches (10 §6).
 COMPAT_OVERRIDES = {
-    "send_error_replies": ("TRUE", True),
+    "send_error_replies": ("FALSE", False),
     "reply_unknown_commands": ("1", True),
     "listen_address": ("0.0.0.0", "0.0.0.0"),
     "inbound_pause_ms": ("50", 50),
@@ -105,8 +105,8 @@ def test_each_compat_key_overrides_its_field(tmp_path: Path, field: str) -> None
 
 
 def test_compat_case_insensitive_names(tmp_path: Path) -> None:
-    config, warnings = load_text(tmp_path, "[COMPAT]\nSend_Error_Replies = true\n")
-    assert config.compat.send_error_replies is True and warnings == []
+    config, warnings = load_text(tmp_path, "[COMPAT]\nSend_Error_Replies = false\n")
+    assert config.compat.send_error_replies is False and warnings == []
 
 
 # ---------------------------------------------------------------------------------------------- [server] and others
@@ -263,7 +263,7 @@ def test_invalid_value_gives_default_with_warning(tmp_path: Path, section: str, 
 
 def test_invalid_value_does_not_affect_other_keys(tmp_path: Path) -> None:
     config, warnings = load_text(tmp_path, "[compat]\nsend_error_replies = maybe\nstrict_new_frame = TRUE\n")
-    assert config.compat.send_error_replies is False and config.compat.strict_new_frame is True
+    assert config.compat.send_error_replies is True and config.compat.strict_new_frame is True
     assert len(warnings) == 1
 
 

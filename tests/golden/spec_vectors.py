@@ -202,9 +202,11 @@ class PayloadVector:
     codes: dict[str, tuple[str, str]] = field(default_factory=dict)
     layout: str | None = None
 
-    def code_values(self, enums: Any) -> dict[str, int]:
-        """Placeholder values from an enum table (anything with ``code(enum_id, label)``)."""
-        return {name: enums.code(enum_id, label) for name, (enum_id, label) in self.codes.items()}
+    def code_values(self, enums: Any) -> dict[str, bytes]:
+        """Placeholder values from an enum table (anything with ``code(enum_id, label)`` and ``size(enum_id)``),
+        each written big-endian at the enum's width (Camera Type is U32 on the wire: capture-analysis.md)."""
+        return {name: enums.code(enum_id, label).to_bytes(enums.size(enum_id), "big")
+                for name, (enum_id, label) in self.codes.items()}
 
 
 def _ct(label: str) -> dict[str, tuple[str, str]]:

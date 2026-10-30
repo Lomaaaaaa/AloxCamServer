@@ -46,8 +46,8 @@ def enums() -> WireEnums:
 def test_packaged_table_loads(enums: WireEnums) -> None:
     assert tuple(enums.tables) == ENUM_IDS
     assert enums.provisional_ids == ("z_reference_method",)
-    for t in enums.tables.values():
-        assert t.size == 2 and t.source == "packaged"
+    for t in enums.tables.values():                              # Camera Type is U32 on the wire (capture)
+        assert t.size == (4 if t.enum_id == "camera_type" else 2) and t.source == "packaged"
     assert enums.table("z_reference_method").lenient and not enums.table("camera_type").lenient
 
 
@@ -125,7 +125,7 @@ def test_override_file_and_inline_precedence(tmp_path: Path) -> None:
     e = WireEnums.load(override_file=override)
     assert e.code("camera_type", "High Mag.") == 1
     t = e.table("camera_type")
-    assert t.source == str(override) and t.label == "Camera Type" and t.size == 2 and not t.provisional
+    assert t.source == str(override) and t.label == "Camera Type" and t.size == 4 and not t.provisional
     assert e.provisional_ids == ()                                # override tables default to provisional = false
     assert e.code("z_reference_method", "FRF") == 2
     inline = WireEnums.load(override_file=override, items={"Camera_Type": ["High Mag.", "Low Mag."]},

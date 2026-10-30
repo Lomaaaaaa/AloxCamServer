@@ -12,13 +12,16 @@ from aloxcam.dispatch import ReplyKind
 from aloxcam.errors import ConfigError, ErrorCluster, ProtocolError
 from aloxcam.lv.flatten import KINDS, Reader, Writer, flatten, parse_layout, unflatten, validate_layout
 from aloxcam.lv.path import PATH_UNC, LVPath
+from aloxcam.wire.enums import WireEnums
 from aloxcam.testing import packaged_enums
 from aloxcam.wire import messages
 from aloxcam.wire.messages import COMMANDS, PayloadCodec
 from aloxcam.wire.protocol import decode_envelope, decode_response_data, parse_header, parse_reply_value
 from golden import spec_vectors as sv
 
-ENUMS = packaged_enums()
+# The spec examples (02 §7.5, 04 §5.7) were written with a U16 Camera Type; the real wire uses U32 (capture),
+# which tests/wire/test_capture_vectors.py covers. These tests check the codec mechanics against the spec bytes.
+ENUMS = WireEnums.load(sizes={"camera_type": 2})
 
 SAMPLES: dict[str, list[object]] = {
     "bool": [False, True],

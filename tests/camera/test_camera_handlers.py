@@ -211,7 +211,7 @@ def test_cam_setup_open_failure_suffixes() -> None:
     rig = make_rig(sim=dataclasses.replace(SIM, camera_names=("cam0",)))
     s = "IMAQdx Open Camera: camera 'nope' not found (simulation)"
     rig.run("Cam Setup", CameraInitData(HIGH_MAG, "nope", 5, True))
-    assert rig.replies.last.sent is False                       # type: ignore[union-attr]  (error ACK suppressed)
+    assert rig.replies.last.sent is True                        # type: ignore[union-attr]  (error ACK sent, as LabVIEW)
     (ev,) = rig.events.events
     assert ev.err == ErrorCluster(True, Code.CAMERA_SDK, s + "Cam Setup")
     assert (ev.extra, ev.command, ev.camera_type) == ("Setup", "Cam Setup", HIGH_MAG)
@@ -329,7 +329,7 @@ def test_cam_cleanup(rig: Rig) -> None:
     assert rig.ctx.state.inited[HIGH_MAG] is False
     assert rig.replies.last.err == NO_ERROR                     # type: ignore[union-attr]
     rig.run("Cam Cleanup", CameraReleaseData(HIGH_MAG))         # again: invalid session, error ACK suppressed
-    assert rig.replies.last.sent is False                       # type: ignore[union-attr]
+    assert rig.replies.last.sent is True                        # type: ignore[union-attr]
     assert rig.events.events[-1].err.code == INVALID_SESSION
     assert rig.events.events[-1].err.source.endswith("Cam Cleanup")
 
@@ -415,7 +415,7 @@ def test_set_exposure_errors_replace_the_source() -> None:
     rig.run("Cam Set Exposure", CameraSetExposureData(LOW_MAG, 1000.0))
     (ev,) = rig.events.events
     assert ev.err == ErrorCluster(True, -1074360201, "CameraAttributes::Exposure::Value")   # replaced, no suffix
-    assert rig.replies.last.sent is False                       # type: ignore[union-attr]
+    assert rig.replies.last.sent is True                        # type: ignore[union-attr]
     rig.events.clear()
     dev.fail_attribute(SIM_EXPOSURE, None)
     dev.fail_attribute(SIM_FRAME_RATE, CameraError(-1074360202, "fr text"))
@@ -624,7 +624,7 @@ def test_set_flatfield_missing_file(check: bool, tmp_path: Path, caplog: pytest.
     if check:
         (ev,) = rig.events.events
         assert ev.err == ErrorCluster(True, Code.IMAGE_FILE, f"{missing}: flat-field file not foundCam Set Field")
-        assert rig.replies.last.sent is False                   # type: ignore[union-attr]
+        assert rig.replies.last.sent is True                    # type: ignore[union-attr]
     else:
         assert rig.events.events == [] and rig.replies.last.err == NO_ERROR      # type: ignore[union-attr]
 
@@ -691,7 +691,7 @@ def test_set_led_error_raw_reply_then_decorated_log() -> None:
     rig = make_rig(alox=with_settings(HIGH_MAG, wait_led_ms=10))
     rig.run("Cam Set Led", CameraSetLedData(HIGH_MAG, True))   # not set up
     last = rig.replies.last
-    assert last is not None and last.sent is False
+    assert last is not None and last.sent is True                # the capture shows LabVIEW sending exactly this
     assert last.err == ErrorCluster(True, INVALID_SESSION, "IMAQdx Property Node: invalid camera session")
     (ev,) = rig.events.events
     assert ev.err.source == "IMAQdx Property Node: invalid camera sessionCam Set Led" and ev.extra == "Set LED"

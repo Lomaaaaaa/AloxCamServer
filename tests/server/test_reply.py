@@ -79,6 +79,11 @@ def rig_send_errors() -> Iterator[Rig]:
     yield from _rig(CompatSwitches(send_error_replies=True), CountingClock())
 
 
+@pytest.fixture
+def rig_suppress_errors() -> Iterator[Rig]:
+    yield from _rig(CompatSwitches(send_error_replies=False), CountingClock())
+
+
 def test_get_heartbeat_reply_equals_the_57_byte_golden_vector() -> None:
     v = sv.GET_HEARTBEAT_REPLY
     for rig in _rig(CompatSwitches(), FixedClock(12345678)):
@@ -93,7 +98,14 @@ def test_get_heartbeat_reply_equals_the_57_byte_golden_vector() -> None:
         assert raw == expected
 
 
-def test_error_ack_suppressed_by_default(rig: Rig) -> None:
+def test_error_ack_sent_by_default(rig: Rig) -> None:
+    rig.replier.ack(rig.req(notifier=b"E"), ERR)        # LabVIEW sends error ACKs (network capture)
+    notifier, _, err, _ = read_reply(rig.client, ReplyKind.ACK)
+    assert (notifier, err) == (b"E", ERR)
+
+
+def test_error_ack_suppressed_when_switched_off(rig_suppress_errors: Rig) -> None:
+    rig = rig_suppress_errors
     req = rig.req()
     assert rig.replier.ack(req, ERR) is ERR           # the ACK VI's error out
     assert req.replied
@@ -191,7 +203,8 @@ def test_error_reply_sends_the_default_value(rig: Rig, kind: ReplyKind, default:
     assert (value, err) == (default, ERR)
 
 
-def test_error_reply_dbl2d_and_ack_and_none(rig: Rig) -> None:
+def test_error_reply_dbl2d_and_ack_and_none(rig_suppress_errors: Rig) -> None:
+    rig = rig_suppress_errors
     rig.replier.error_reply(rig.req(), ReplyKind.DBL2D, ERR)
     _, value, err, _ = read_reply(rig.client, ReplyKind.DBL2D)
     assert value.shape == (0, 0) and err == ERR

@@ -37,7 +37,9 @@ from aloxcam.wire.messages import (
 )
 from golden import spec_vectors as sv
 
-ENUMS = packaged_enums()
+# The spec examples (02 §7.5, 04 §5.7) were written with a U16 Camera Type; the real wire uses U32 (capture),
+# which tests/wire/test_capture_vectors.py covers. These tests check the codec mechanics against the spec bytes.
+ENUMS = WireEnums.load(sizes={"camera_type": 2})
 C, Z = CAMERA_WORKER, Z_WORKER
 A, S, D, U, B, IMG, D2, N = (ReplyKind.ACK, ReplyKind.STR, ReplyKind.DBL, ReplyKind.U32, ReplyKind.BOOL,
                              ReplyKind.IMAGE, ReplyKind.DBL2D, ReplyKind.NONE)

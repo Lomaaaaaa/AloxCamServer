@@ -154,7 +154,7 @@ expect = { reply = "DBL", value = 10000.0, abs_tol = 1e-9 }
 [[step]]
 command = "Z Move Absolute"
 data = { pos_mm = 95.0 }
-expect = { reply = "none" }              # outside [zmin_DBL, zmax_DBL]: error 9405, the error ACK is not sent
+expect = { reply = "ACK", error = { status = true, code = 9405 } }   # outside [zmin_DBL, zmax_DBL]
 
 [[step]]
 command = "Exit"

@@ -1,5 +1,6 @@
 # aloxcam/data/wire_enums.toml — item orders from the owner's Edit Items screenshots (docs/answers/owner-answers.md §1).
-# Representation: Camera Command is U16 (confirmed); the others are assumed U16 (LabVIEW default).
+# Representation: Camera Command U16 (owner) and Camera Type U32 (network capture) are confirmed; the others are
+# assumed U16 (LabVIEW default).
 # Override in <settings>/alox_camera_server.ini: [wire] enums_file, [wire.items], [wire.size].
 schema = 1
 
@@ -32,7 +33,7 @@ items = [
 [enums.camera_type]
 label = "Camera Type"
 ctl = "alox_typedef_camera_type.ctl"
-size = 2
+size = 4                      # U32: the captured type descriptor is 0x17 (enum U32), docs/answers/capture-analysis.md
 provisional = false
 items = ["High Mag.", "Low Mag."]
 

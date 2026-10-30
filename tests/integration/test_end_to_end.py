@@ -71,7 +71,7 @@ def test_error_replies(start_server: StartServer) -> None:
 
 
 def test_unknown_commands_only(start_server: StartServer, tmp_path: Path) -> None:
-    server = start_server(compat={"reply_unknown_commands": "TRUE"})
+    server = start_server(compat={"reply_unknown_commands": "TRUE", "send_error_replies": "FALSE"})
     script = tmp_path / "unknown_only.toml"
     script.write_text("""
 [session]

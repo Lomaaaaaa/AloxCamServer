@@ -62,7 +62,7 @@ def test_port_name(com: int, port: str) -> None:
 
 def test_compat_defaults_10_6() -> None:
     assert dataclasses.asdict(CompatSwitches()) == {
-        "send_error_replies": False,
+        "send_error_replies": True,       # LabVIEW sends error ACKs (network capture)
         "reply_unknown_commands": False,
         "listen_address": "127.0.0.1",
         "inbound_pause_ms": 0,

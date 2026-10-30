@@ -285,10 +285,10 @@ command = "Z Get Position"
 expect = { reply = "DBL", value = 10.0, abs_tol = 1e-6 }
 
 [[step]]
-name = "out of range: 9405, error ACK suppressed"
+name = "out of range: 9405 error ACK (LabVIEW sends error ACKs: capture-analysis.md)"
 command = "Z Move Absolute"
 data = { pos_mm = 30.0 }
-expect = { reply = "none" }
+expect = { reply = "ACK", error = { status = true, code = 9405 } }
 
 [[step]]
 command = "Z Set Max Limit"
@@ -357,9 +357,9 @@ data = { value_mm = 0.5 }
 expect = { reply = "ACK", error = { status = false, code = 0 } }
 
 [[step]]
-name = "RMC? on the closed link fails: error ACK suppressed (08 Z9)"
+name = "RMC? on the closed link fails: error ACK (08 Z9)"
 command = "Z Cleanup"
-expect = { reply = "none" }
+expect = { reply = "ACK", error = { status = true, code = -4 } }
 
 # ------------------------------------------------------------------------------------------ 19-21 camera clean-up, unknown, Exit
 [[step]]

@@ -133,7 +133,7 @@ def test_handler_exception_finished_as_9500_and_loop_continues(ctx: WorkerContex
         run_until_stopped(worker)
     assert journal.ran == ["Cam Start", "Exit"]
     (reply,) = _replies(ctx).replies
-    assert reply.kind is ReplyKind.ACK and not reply.sent               # error ACK: send_error_replies FALSE
+    assert reply.kind is ReplyKind.ACK and reply.sent                   # error ACK sent (default, as LabVIEW)
     assert reply.err == ErrorCluster(True, 9500, "ValueError: boomCam stop")
     (event,) = _events(ctx).events
     assert (event.err.code, event.server_type, event.extra) == (9500, "Camera", "Stop")

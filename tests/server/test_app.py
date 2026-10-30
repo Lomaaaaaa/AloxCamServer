@@ -204,7 +204,7 @@ def test_load_configuration_applies_wire_overrides(wp: FakeWP, tmp_path: Path) -
 def test_check_config_prints_the_routing_table(wp: FakeWP, monkeypatch: pytest.MonkeyPatch,
                                                capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(app, "load_configuration",
-                        lambda args: loaded_config(wp, compat=CompatSwitches(send_error_replies=True)))
+                        lambda args: loaded_config(wp, compat=CompatSwitches(send_error_replies=False)))
     assert app.main(["--check-config", "--port", "1234", "--listen", "127.0.0.2"]) == 0
     out = capsys.readouterr().out
     assert "routing table (camera_command)" in out
@@ -215,7 +215,7 @@ def test_check_config_prints_the_routing_table(wp: FakeWP, monkeypatch: pytest.M
     assert "routing self-check: OK" in out
     assert "127.0.0.2:1234  (address from --listen, port from --port)" in out
     assert "z_reference_method" in out and "PROVISIONAL" in out
-    assert "send_error_replies             = TRUE  (changed)" in out
+    assert "send_error_replies             = FALSE  (changed)" in out
     assert "  - w1" in out and "result: OK" in out
     assert not any(name == "setup_diagnostic_logging" for name, _ in wp.calls)
 

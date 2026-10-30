@@ -85,7 +85,7 @@ def events(ctx) -> RecordingEvents:  # type: ignore[no-untyped-def]
 
 # ---------------------------------------------------------------------------------------------- order A
 def test_order_a_ack_error_decorated_logged_and_suppressed() -> None:
-    ctx = make_worker_context()
+    ctx = make_worker_context(send_error_replies=False)
     r = req(CAM_STOP)
     out = finish_camera(ctx, r, None, ERR, camera_type=LOW_MAG)
     decorated = ErrorCluster(True, ERR.code, "IMAQdx error Cam stop")
@@ -179,7 +179,7 @@ def test_raw_first_heartbeat_and_dbl2d() -> None:
 
 # ---------------------------------------------------------------------------------------------- Z
 def test_finish_z_no_decoration_command_none() -> None:
-    ctx = make_worker_context()
+    ctx = make_worker_context(send_error_replies=False)
     err = ErrorCluster(True, 9405, "Z move out of range")
     out = finish_z(ctx, req(Z_MOVE), None, err)
     assert out == err and ctx.state.error_out == err
@@ -238,7 +238,7 @@ def test_reject_undecodable_reply_none_logs_only() -> None:
 
 
 def test_reject_undecodable_never_forced() -> None:
-    ctx = make_worker_context()                          # send_error_replies FALSE
+    ctx = make_worker_context(send_error_replies=False)
     reject_undecodable(ctx, req(CAM_STOP, decode_error=UNDECODABLE))
     assert replies(ctx).replies[0].sent is False
 
