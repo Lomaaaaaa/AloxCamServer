@@ -2,13 +2,19 @@
 
 Spec: 01 §3 (start-up stages 0–4), §7 (shutdown), §10.1 (mapping: ``main()``, cleanup, ``sys.exit``), 01 A10;
 09 §3–§5 (folders, ``alox_setup.ini``, ``alox.ini``), §7.7 (diagnostic log); 10 §6 (``[compat]`` registry);
-02 D17 (fail at start-up when the port is taken); docs/phase1-design.md §3.4.7, §4.1, Appendix A.
+02 D17 (fail at start-up when the port is taken); docs/phase1-design.md §3.4.7, §4.1, Appendix A;
+docs/phase2-design.md §3.4 (per-device simulation, the real Z stage, ``--simulate-cameras``).
+
+Device choice (phase 2): ``--simulate`` simulates the cameras and the Z stage; ``--simulate-cameras`` simulates the
+cameras and drives the real PI stage (``PiSerialStage``, pyserial); without either, ``[simulation] enabled`` /
+``cameras`` / ``stage`` decide. Real cameras arrive in phase 3: without simulated cameras the server exits with code 2.
 
 WP3 (configuration, event logs), WP5 (Z stage) and WP6 (cameras, imaging) are imported only inside the functions
 that need them (design §4.1), so this module imports with WP1/WP2 alone.
 
 Exit codes: 0 normal stop (``Exit`` or signal); 1 start-up failure (bind error, ``ConfigError``); 2 usage error / no
-backend; 3 shutdown timeout. ``print`` is used only for ``--check-config`` and ``--version``.
+backend (real cameras, or the real stage without pyserial); 3 shutdown timeout. ``print`` is used only for
+``--check-config`` and ``--version``.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from aloxcam import PHASE, __version__
 from aloxcam.clock import TickFn, make_tick_source
 from aloxcam.dispatch import Request, WorkerContext
 from aloxcam.errors import Code, ConfigError
-from aloxcam.settings import AloxSettings, CompatSwitches, Folders, ServerConfig
+from aloxcam.settings import AloxSettings, CompatSwitches, Folders, ServerConfig, SimulationOptions
 from aloxcam.state import ServerState
 from aloxcam.wire.enums import WireEnums, build_routing, routing_self_check
 from aloxcam.wire.messages import CASES, COMMANDS, PayloadCodec
@@ -47,12 +53,15 @@ __all__ = [
     "EXIT_STARTUP_FAILURE",
     "EXIT_USAGE",
     "LOG_LEVELS",
+    "NO_CAMERA_BACKEND",
     "LoadedConfig",
+    "backend_problem",
     "build_runtime",
     "check_config",
     "load_configuration",
     "main",
     "parse_args",
+    "simulation_modes",
 ]
 
 log = logging.getLogger(__name__)
@@ -66,6 +75,8 @@ EXIT_SHUTDOWN_TIMEOUT = 3
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 ALOX_INI_NAME = "alox.ini"
 SETUP_INI_NAME = "alox_setup.ini"
+NO_CAMERA_BACKEND = ("no hardware backend for the cameras before phase 3: start with --simulate-cameras (real Z stage) "
+                     "or --simulate, or set [simulation] cameras = TRUE (or enabled = TRUE)")
 _SHUTDOWN_GRACE_S = 3.0          # main gives up shutdown_timeout_s + 3 s after shutdown_started (design §3.4.7)
 _WAIT_SLICE_S = 0.2
 
@@ -95,13 +106,18 @@ def _port(text: str) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="aloxcam", description="ALOX Camera Server: Python re-implementation (phase 1, simulated devices).")
+        prog="aloxcam", description="ALOX Camera Server: Python re-implementation (phase 2: real PI Z stage, "
+                                    "simulated cameras).")
     p.add_argument("--setup-ini", type=Path, metavar="PATH",
                    help=f"{SETUP_INI_NAME} to use (default: <executable folder>/{SETUP_INI_NAME})")
     p.add_argument("--settings-dir", type=Path, metavar="PATH",
                    help="settings folder (alox.ini, alox_camera_server.ini); overrides [folders] settings")
-    p.add_argument("--simulate", action="store_true",
-                   help="use the simulated cameras and Z stage (same as [simulation] enabled = TRUE)")
+    devices = p.add_mutually_exclusive_group()
+    devices.add_argument("--simulate", action="store_true",
+                         help="use the simulated cameras and Z stage (same as [simulation] enabled = TRUE)")
+    devices.add_argument("--simulate-cameras", action="store_true",
+                         help="use the simulated cameras and the real PI Z stage (COM port from alox.ini "
+                              "[hardware.z], [stage] port_map; needs pyserial)")
     p.add_argument("--port", type=_port, metavar="N",
                    help="TCP port; overrides [server] port and alox.ini port_I32 (0 = ephemeral)")
     p.add_argument("--listen", metavar="ADDR", help="listen address; overrides [compat] listen_address")
@@ -156,24 +172,55 @@ def _payload_codec(loaded: LoadedConfig) -> PayloadCodec:
 
 
 # ---------------------------------------------------------------------------------------------- assembly
-def build_runtime(loaded: LoadedConfig, *, simulate: bool, port: int | None = None, host: str | None = None,
+def simulation_modes(args: argparse.Namespace, simulation: SimulationOptions) -> tuple[bool, bool]:
+    """``(simulate_cameras, simulate_stage)`` (docs/phase2-design.md §3.4): ``--simulate`` → both;
+    ``--simulate-cameras`` → cameras only (the real stage, whatever ``[simulation]`` says); otherwise ``[simulation]``
+    decides (``enabled or cameras``, ``enabled or stage``)."""
+    if getattr(args, "simulate", False):
+        return True, True
+    if getattr(args, "simulate_cameras", False):
+        return True, False
+    return simulation.simulate_cameras, simulation.simulate_stage
+
+
+def backend_problem(simulate_cameras: bool, simulate_stage: bool) -> str | None:
+    """Why the server cannot start with this device choice, or None: real cameras (phase 3), or the real stage without
+    pyserial."""
+    if not simulate_cameras:
+        return NO_CAMERA_BACKEND
+    if not simulate_stage:
+        from aloxcam.zstage.gcs_serial import PYSERIAL_MISSING, pyserial_version
+
+        if pyserial_version() is None:
+            return f"the real Z stage needs pyserial: {PYSERIAL_MISSING} (or start with --simulate)"
+    return None
+
+
+def build_runtime(loaded: LoadedConfig, *, simulate: bool = False, simulate_cameras: bool | None = None,
+                  simulate_stage: bool | None = None, port: int | None = None, host: str | None = None,
                   tick: TickFn | None = None) -> ServerRuntime:
     """Assemble the server (design §3.4.7): event logs, image codec, backends, ``ZController``, camera sessions,
     payload codec, routing (+ self-check, ERROR log), ``ServerState``, handler tables, contexts, ``abort_waits`` and
-    ``close_hardware``. Phase 1 has only the simulated backends: ``simulate=False`` raises :class:`ConfigError`.
-    Nothing is opened here (cameras and stage are opened by ``Cam Setup`` / ``Z Setup``)."""
-    if not simulate:
-        raise ConfigError(Code.LV_INVALID_INPUT,
-                          "no hardware backend in phase 1: use --simulate or [simulation] enabled = TRUE")
+    ``close_hardware``. Nothing is opened here (cameras and stage are opened by ``Cam Setup`` / ``Z Setup``).
+
+    Devices (docs/phase2-design.md §3.4): ``simulate`` simulates both, as in phase 1; ``simulate_cameras`` /
+    ``simulate_stage``, when given, override it per device. The real stage is ``ZController(PiSerialStage(),
+    [stage])``: ``Z Setup`` opens ``alox.ini`` ``[hardware.z]`` ``COM<n>`` (through ``[stage] port_map``). Real cameras
+    do not exist before phase 3, and the real stage needs pyserial: both raise :class:`ConfigError`."""
+    simulate_cameras = simulate if simulate_cameras is None else simulate_cameras
+    simulate_stage = simulate if simulate_stage is None else simulate_stage
+    problem = backend_problem(simulate_cameras, simulate_stage)
+    if problem is not None:
+        raise ConfigError(Code.LV_INVALID_INPUT, problem)
     from aloxcam.camera.handlers import CAMERA_HANDLERS, CameraContext, close_cameras
     from aloxcam.camera.session import make_sessions
     from aloxcam.camera.sim import SimCameraBackend
     from aloxcam.eventlog import EventLogs
     from aloxcam.imaging.codec import make_codec
     from aloxcam.server.runtime import RuntimeParts, ServerRuntime
+    from aloxcam.zstage.backend import StageBackend
     from aloxcam.zstage.controller import ZController
     from aloxcam.zstage.handlers import Z_HANDLERS, ZContext
-    from aloxcam.zstage.sim import SimStage
 
     cfg = loaded.server
     tick = tick or make_tick_source(cfg.server.tick_source)
@@ -191,7 +238,18 @@ def build_runtime(loaded: LoadedConfig, *, simulate: bool, port: int | None = No
     state = ServerState.from_settings(loaded.alox, cfg.server)
 
     camera_backend = SimCameraBackend(cfg.simulation)
-    stage = ZController(SimStage(cfg.simulation), cfg.stage)
+    stage_backend: StageBackend
+    if simulate_stage:
+        from aloxcam.zstage.sim import SimStage
+
+        stage_backend = SimStage(cfg.simulation)
+    else:
+        from aloxcam.zstage.pi_serial import PiSerialStage
+
+        stage_backend = PiSerialStage()
+    log.info("devices: %s cameras, %s", "simulated" if simulate_cameras else "real",
+             "simulated Z stage" if simulate_stage else f"real Z stage ({_stage_port_text(loaded)})")
+    stage = ZController(stage_backend, cfg.stage)
     sessions = make_sessions(compat=cfg.compat, tick=tick, decimal_separator=cfg.logging.decimal_separator)
     try:
         stage.startup_macro_check()         # 01 §3.4.3: only if [stage] startup_macro_check and connected
@@ -219,6 +277,14 @@ def build_runtime(loaded: LoadedConfig, *, simulate: bool, port: int | None = No
                          make_camera_context=make_camera_context, make_z_context=make_z_context,
                          camera_background=None, abort_waits=stage.cancel_waits, close_hardware=close_hardware)
     return ServerRuntime(parts)
+
+
+def _stage_port_text(loaded: LoadedConfig) -> str:
+    """``"COM4 at 115200 Bd, …"`` or ``"COM4 -> socket://127.0.0.1:5555 ([stage] port_map) at 115200 Bd, …"``."""
+    z = loaded.alox.z
+    target = loaded.server.stage.port_map.get(z.port_name)
+    port = z.port_name if target is None else f"{z.port_name} -> {target} ([stage] port_map)"
+    return f"{port} at {z.baudrate} Bd, opened by Z Setup"
 
 
 def _base_fields(base: WorkerContext) -> dict[str, object]:
@@ -256,11 +322,21 @@ def check_config(loaded: LoadedConfig, args: argparse.Namespace) -> int:
                    "[server] port" if cfg.server.port is not None else "alox.ini port_I32")
     host = args.listen if args.listen is not None else cfg.compat.listen_address
     host_source = "--listen" if args.listen is not None else "[compat] listen_address"
-    simulate = bool(args.simulate or cfg.simulation.enabled)
+    simulate_cameras, simulate_stage = simulation_modes(args, cfg.simulation)
+    if simulate_stage:
+        stage_text = "simulated"
+    else:
+        from aloxcam.zstage.gcs_serial import pyserial_version
+
+        version = pyserial_version()
+        stage_text = (f"real PI C-663: {_stage_port_text(loaded)}; "
+                      + (f"pyserial {version} importable" if version is not None
+                         else "pyserial NOT importable (pip install pyserial): the server would exit with code 2"))
     out += ["", "server",
             f"  listen      {host}:{port}  (address from {host_source}, port from {port_source})",
-            f"  simulation  {_bool_text(simulate)}"
-            + ("" if simulate else "  (no hardware backend in phase 1: the server would exit with code 2)"),
+            "  cameras     " + ("simulated" if simulate_cameras
+                                else "real: no camera backend before phase 3, the server would exit with code 2"),
+            f"  Z stage     {stage_text}",
             f"  tick source {cfg.server.tick_source}",
             f"  image codec {cfg.image.codec}"]
     if not 0 <= port <= 0xFFFF:
@@ -499,11 +575,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         for warning in loaded.warnings:
             log.warning("configuration: %s", warning)
         _log_startup(loaded, args)
-        if not (args.simulate or loaded.server.simulation.enabled):
-            log.error("no hardware backend in phase 1: start with --simulate (or [simulation] enabled = TRUE)")
+        simulate_cameras, simulate_stage = simulation_modes(args, loaded.server.simulation)
+        problem = backend_problem(simulate_cameras, simulate_stage)
+        if problem is not None:
+            log.error("%s", problem)
             return EXIT_NO_BACKEND
         try:
-            runtime = build_runtime(loaded, simulate=True, port=args.port, host=args.listen)
+            runtime = build_runtime(loaded, simulate=simulate_cameras and simulate_stage,
+                                    simulate_cameras=simulate_cameras, simulate_stage=simulate_stage,
+                                    port=args.port, host=args.listen)
         except ConfigError as exc:
             log.error("start-up failed: %s", exc.source)
             return EXIT_STARTUP_FAILURE

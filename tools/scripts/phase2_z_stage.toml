@@ -1,0 +1,193 @@
+# Phase 2 replay script: the 19 Z commands against the Python server with the REAL PI stage and simulated cameras.
+# docs/phase2-design.md §4.2. Used by tests/integration/test_phase2_stage.py against the FakeC663Server.
+#
+# Run it at the fab, with the LabVIEW server stopped (the COM port is exclusive):
+#
+#   python -m aloxcam --setup-ini D:\alox\alox_setup.ini --simulate-cameras --port 5030
+#   python tools\replay_client.py tools\scripts\phase2_z_stage.toml --port 5030 ^
+#       --var z_abs=60.0 --var z_rel=0.5 --var z_rel_end=60.5 --var z_min=0.0 --var z_max=90.0 --record z.jsonl
+#
+# THE STAGE MOVES. Before running it:
+# - Z Setup references the axis ([stage] always_reference = TRUE): the stage drives to its negative limit switch (FNL)
+#   and back into range, exactly as the LabVIEW server does at every Z Setup. Allow up to 300 s.
+# - z_abs, z_rel and z_rel_end have NO default: choose a safe window yourself. The stage moves to z_abs, then by z_rel
+#   (z_rel_end = z_abs + z_rel, the position expected afterwards), then back towards z_abs while "Z Stop" stops it.
+#   All of them must lie inside [zmin_DBL, zmax_DBL] of alox.ini and be safe for the objective.
+# - z_min / z_max must be the alox.ini [hardware.z] zmin_DBL / zmax_DBL: the script ends by setting the in-memory
+#   limits to them (Z Set Min / Max Limit), i.e. it leaves them unchanged.
+# - Moves run at slow_speed (default 1 mm/s); the speed stays slow until the next Z Setup.
+# - z_out (default 1000 mm) must be outside the software range: that move is refused by the server (9405), no motion.
+# - Steps marked "lab finding" record behaviour that only the real C-663 can show (08 §13.6, questionnaire Q35):
+#   a FAIL there is a finding to report, not a fault of the server. Keep the --record file.
+# The script ends with Exit: the server stops.
+
+[session]
+host = "127.0.0.1"
+port = 503
+timeout_s = 30.0
+no_reply_wait_s = 0.5
+mask = ["tick"]
+
+[vars]
+slow_speed = "1.0"
+z_out = "1000.0"
+
+# ------------------------------------------------------------------------------------------ set-up and status
+[[step]]
+name = "Z Setup: open the COM port, purge, servo on, reference (FNL), normal speed"
+command = "Z Setup"
+timeout_s = 300.0
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "identity (*IDN?)"
+command = "Z Get Serial"
+data = { type = true }
+expect = { reply = "STR", error = { status = false, code = 0 } }
+
+[[step]]
+name = "serial number (3rd *IDN? field; lab finding: what LabVIEW returns, 08 Z21)"
+command = "Z Get Serial"
+data = { type = false }
+expect = { reply = "STR", error = { status = false, code = 0 } }
+
+[[step]]
+name = "status: ERR? = 0, DH running or restarted"
+command = "Z Get Status"
+expect = { reply = "BOOL", value = true, error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Get Error"
+expect = { reply = "STR", value = "", error = { status = false, code = 0 } }
+
+[[step]]
+name = "slow speed for the moves"
+command = "Z Set Speed"
+data = { speed_mm_s = "${slow_speed}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Get Speed"
+expect = { reply = "DBL", value = "${slow_speed}", abs_tol = 1e-3, error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Get Reference"
+expect = { reply = "BOOL", value = true, error = { status = false, code = 0 } }
+
+[[step]]
+name = "position after referencing (recorded, not checked)"
+command = "Z Get Position"
+expect = { reply = "DBL", error = { status = false, code = 0 } }
+
+# ------------------------------------------------------------------------------------------ moves
+[[step]]
+command = "Z Move Absolute"
+data = { pos_mm = "${z_abs}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Wait End Move"
+data = { add_wait_ms = 0, polling_cycle_ms = 10, add_wait_only = false }
+timeout_s = 300.0
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Get Position"
+expect = { reply = "DBL", value = "${z_abs}", abs_tol = 0.01, error = { status = false, code = 0 } }
+
+[[step]]
+name = "relative move (lab finding: MVR semantics, 08 Z5)"
+command = "Z Move Relative"
+data = { move_mm = "${z_rel}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Wait End Move"
+data = { add_wait_ms = 0, polling_cycle_ms = 10, add_wait_only = false }
+timeout_s = 300.0
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Get Position"
+expect = { reply = "DBL", value = "${z_rel_end}", abs_tol = 0.01, error = { status = false, code = 0 } }
+
+[[step]]
+name = "outside the software range: 9405 error ACK, nothing sent to the controller"
+command = "Z Move Absolute"
+data = { pos_mm = "${z_out}" }
+expect = { reply = "ACK", error = { status = true, code = 9405, source = "Z move out of range" } }
+
+# ------------------------------------------------------------------------------------------ stop
+[[step]]
+name = "back towards z_abs..."
+command = "Z Move Absolute"
+data = { pos_mm = "${z_abs}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "...stopped on the way: STP 1, then DH restarted (lab finding: is STP 1 accepted? 08 Z7)"
+command = "Z Stop"
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Wait End Move"
+data = { add_wait_ms = 0, polling_cycle_ms = 10, add_wait_only = false }
+timeout_s = 300.0
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "position where the stop left it (recorded, not checked)"
+command = "Z Get Position"
+expect = { reply = "DBL", error = { status = false, code = 0 } }
+
+[[step]]
+name = "error 10 left pending by STP (08 Z6; lab finding)"
+command = "Z Get Status"
+expect = { reply = "BOOL", value = false, error = { status = true, code = 10, source = "Controller error" } }
+
+[[step]]
+name = "ERR? cleared it"
+command = "Z Get Status"
+expect = { reply = "BOOL", value = true, error = { status = false, code = 0 } }
+
+# ------------------------------------------------------------------------------------------ joystick
+[[step]]
+command = "Z Enable Joystick"
+data = { joystick_id = 1, joystick_axis = 1 }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Joystick Enabled ?"
+data = { joystick_id = 1, joystick_axis = 1 }
+expect = { reply = "BOOL", value = true, error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Disable Joystick"
+data = { joystick_id = 1, joystick_axis = 1 }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Joystick Enabled ?"
+data = { joystick_id = 1, joystick_axis = 1 }
+expect = { reply = "BOOL", value = false, error = { status = false, code = 0 } }
+
+# ------------------------------------------------------------------------------------------ limits, clean-up, Exit
+[[step]]
+name = "software limits back to the alox.ini values"
+command = "Z Set Min Limit"
+data = { value_mm = "${z_min}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+command = "Z Set Max Limit"
+data = { value_mm = "${z_max}" }
+expect = { reply = "ACK", error = { status = false, code = 0 } }
+
+[[step]]
+name = "Z Cleanup closes the port; RMC? on the closed link fails: error ACK -4 (08 Z9)"
+command = "Z Cleanup"
+expect = { reply = "ACK", error = { status = true, code = -4, source = "RMC?: not connected" } }
+
+[[step]]
+command = "Exit"
+expect = { reply = "none", connection = "closed" }

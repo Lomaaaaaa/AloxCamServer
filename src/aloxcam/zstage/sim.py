@@ -22,6 +22,10 @@ The model is deterministic for a given ``clock`` (seconds):
   ``stage_dh_macro_s`` ≤ 0; with ``stage_dh_macro_s`` > 0 it ends that many seconds after its start. ``STP`` / ``#24``
   stop it. :meth:`trigger_home` (digital input 1 high) makes a running ``DH`` start ``HOME``: joystick 1 off, move to
   0 mm, wait on target, then ``DH`` again. ``RMC?`` returns the running macro's name or ``""``.
+
+Phase 2: :class:`aloxcam.zstage.fake_c663.FakeC663` puts the GCS ASCII protocol on top of this model
+(docs/phase2-design.md §3.3); :meth:`SimStage.latch_error` lets it latch the errors of frames the model has no method
+for.
 """
 
 from __future__ import annotations
@@ -214,6 +218,13 @@ class SimStage(StageBackend):
         """Forget the recorded frames."""
         with self._lock:
             self._frames.clear()
+
+    def latch_error(self, code: int) -> None:
+        """A command the controller refused: latch ``code`` until the next ``ERR?`` (only the last error is kept).
+        Used by :class:`aloxcam.zstage.fake_c663.FakeC663` for unknown commands (2), syntax errors (1) and injected
+        faults."""
+        with self._lock:
+            self._latch(int(code))
 
     def trigger_home(self) -> bool:
         """Digital input 1 goes high (e.g. the hardware button): a running ``DH`` starts ``HOME``. Returns whether

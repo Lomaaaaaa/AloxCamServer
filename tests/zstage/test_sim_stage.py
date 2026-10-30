@@ -17,6 +17,12 @@ MakeSim = Callable[..., SimStage]
 FakeTime = Any                                               # tests/zstage/conftest.py fixture
 
 
+@pytest.fixture
+def stage_kind() -> str:
+    """These tests are about SimStage itself: ``make_sim`` builds a SimStage only (tests/zstage/conftest.py)."""
+    return "sim"
+
+
 def ready(make_sim: MakeSim, **overrides: object) -> SimStage:
     """A connected, referenced stage with servo on (the state after ``Z Setup``)."""
     sim = make_sim(stage_initially_referenced=True, **overrides)

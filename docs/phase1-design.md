@@ -2309,6 +2309,8 @@ port_map =
 
 [simulation]
 enabled = FALSE
+cameras = FALSE
+stage = FALSE
 camera_names =
 image_width = 640
 image_height = 480
@@ -2325,6 +2327,8 @@ stage_dh_macro_s = 0
 ```
 
 `[server] port` empty = `alox.ini [hardware.camera] port_I32`. `[stage] port_map` format: `COM2=/dev/ttyUSB0, COM3=/dev/ttyS2`.
+Phase 2 added `[simulation] cameras` and `stage` (simulate one device only) and `socket://host:port` targets in
+`port_map` ([phase2-design.md](phase2-design.md) §3.3–§3.4).
 
 ## Appendix B — Phase 1 exit criteria mapping (10 §5)
 

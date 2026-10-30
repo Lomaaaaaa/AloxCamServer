@@ -40,6 +40,8 @@ class Code(IntEnum):
     NO_ERROR = 0
     LV_INVALID_INPUT = 1                # LabVIEW "An input parameter is invalid" (non-finite numeric inputs)
     EXTRA_DATA_FOUND = -1               # HW TCP Extract TCP Data (02 §5.3) — diagnostic only
+    PI_SEND_ERROR = -2                  # PI interface code (phase 2): serial write failed ("Data Send Error")
+    PI_RECEIVE_ERROR = -3               # PI interface code (phase 2): serial read failed, e.g. link dropped
     PI_NOT_CONNECTED = -4               # Python choice (08 §13.3): GCS call with no open link
     PI_OPEN_PORT = -6                   # Python choice (08 §13.3): serial port open failure
     PI_TIMEOUT = -7                     # "Wait for axes to stop.vi: Timeout." / serial read timeout

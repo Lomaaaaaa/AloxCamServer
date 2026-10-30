@@ -113,6 +113,8 @@ port_map =
 
 [simulation]
 enabled = FALSE
+cameras = FALSE
+stage = FALSE
 camera_names =
 image_width = 640
 image_height = 480
@@ -258,6 +260,8 @@ _SCHEMA: dict[str, tuple[type[Any], tuple[_Key, ...]]] = {
     )),
     "simulation": (SimulationOptions, (
         _Key("enabled", "bool"),
+        _Key("cameras", "bool"),
+        _Key("stage", "bool"),
         _Key("camera_names", "list"),
         _Key("image_width", "int", check=_at_least(1)),
         _Key("image_height", "int", check=_at_least(1)),

@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from aloxcam import __version__, app
+from aloxcam import PHASE, __version__, app
 from aloxcam.dispatch import ReplyKind
 from aloxcam.errors import ConfigError
 from aloxcam.server.runtime import ServerRuntime
@@ -142,6 +142,7 @@ def test_parse_args_defaults() -> None:
         (None, None, False, None, None, None)
     assert (args.no_stderr_log, args.ready_file, args.check_config, args.write_settings_template, args.version) == \
         (False, None, False, None, False)
+    assert args.simulate_cameras is False
 
 
 def test_parse_args_all_options(tmp_path: Path) -> None:
@@ -162,14 +163,14 @@ def test_usage_errors_exit_2(argv: list[str], capsys: pytest.CaptureFixture[str]
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert app.main(["--version"]) == 0
-    assert capsys.readouterr().out.strip() == f"aloxcam {__version__} (phase 1)"
+    assert capsys.readouterr().out.strip() == f"aloxcam {__version__} (phase {PHASE})"
 
 
 def test_python_dash_m_aloxcam_version() -> None:
     env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
     result = subprocess.run([sys.executable, "-m", "aloxcam", "--version"], capture_output=True, text=True, env=env,
                             timeout=60, check=False)
-    assert result.returncode == 0 and result.stdout.strip() == f"aloxcam {__version__} (phase 1)"
+    assert result.returncode == 0 and result.stdout.strip() == f"aloxcam {__version__} (phase {PHASE})"
 
 
 # ---------------------------------------------------------------------------------------------- configuration
@@ -286,6 +287,52 @@ def test_build_runtime_without_simulate_raises(wp: FakeWP) -> None:
         app.build_runtime(loaded_config(wp), simulate=False)
 
 
+# ---------------------------------------------------------------------------------------------- phase 2 devices
+@pytest.mark.parametrize(("argv", "simulation", "expected"), [
+    ([], SimulationOptions(), (False, False)),
+    ([], SimulationOptions(enabled=True), (True, True)),
+    ([], SimulationOptions(cameras=True), (True, False)),
+    ([], SimulationOptions(stage=True), (False, True)),
+    ([], SimulationOptions(cameras=True, stage=True), (True, True)),
+    (["--simulate"], SimulationOptions(), (True, True)),
+    (["--simulate-cameras"], SimulationOptions(), (True, False)),
+    (["--simulate-cameras"], SimulationOptions(enabled=True), (True, False)),     # the command line wins
+    (["--simulate-cameras"], SimulationOptions(stage=True), (True, False)),
+])
+def test_simulation_modes(argv: list[str], simulation: SimulationOptions, expected: tuple[bool, bool]) -> None:
+    args = app.parse_args(argv)
+    assert app.simulation_modes(args, simulation) == expected
+    assert (simulation.simulate_cameras, simulation.simulate_stage) == (
+        simulation.enabled or simulation.cameras, simulation.enabled or simulation.stage)
+
+
+def test_backend_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert app.backend_problem(True, True) is None
+    assert app.backend_problem(True, False) is None                    # pyserial is a dev dependency
+    assert app.backend_problem(False, True) == app.NO_CAMERA_BACKEND
+    monkeypatch.setitem(sys.modules, "serial", None)
+    problem = app.backend_problem(True, False)
+    assert problem is not None and "pip install pyserial" in problem
+    assert app.backend_problem(True, True) is None
+
+
+def test_main_passes_the_device_choice(wp: FakeWP, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app, "load_configuration", lambda args: loaded_config(wp))
+    seen: list[dict[str, Any]] = []
+
+    def build(loaded: app.LoadedConfig, **kwargs: Any) -> ServerRuntime:
+        seen.append(kwargs)
+        raise ConfigError(1, "stop here")
+
+    monkeypatch.setattr(app, "build_runtime", build)
+    assert app.main(["--simulate-cameras", "--no-stderr-log"]) == 1
+    assert app.main(["--simulate", "--no-stderr-log"]) == 1
+    assert [(k["simulate"], k["simulate_cameras"], k["simulate_stage"]) for k in seen] == \
+        [(False, True, False), (True, True, True)]
+    assert app.main(["--no-stderr-log"]) == 2                          # [simulation] all FALSE: real cameras
+    assert len(seen) == 2
+
+
 # ---------------------------------------------------------------------------------------------- running
 @dataclass
 class Served:
@@ -320,9 +367,10 @@ def fake_runtime(wp: FakeWP, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[
                         lambda args: loaded_config(wp, simulation=SimulationOptions(enabled=True),
                                                    server=ServerOptions(shutdown_timeout_s=0.3)))
 
-    def build(loaded: app.LoadedConfig, *, simulate: bool, port: int | None = None, host: str | None = None,
+    def build(loaded: app.LoadedConfig, *, simulate: bool, simulate_cameras: bool | None = None,
+              simulate_stage: bool | None = None, port: int | None = None, host: str | None = None,
               tick: Any = None) -> ServerRuntime:
-        assert simulate
+        assert simulate and simulate_cameras and simulate_stage
         parts = replace(make_parts(fakes), port=port if port is not None else 0, host=host or "127.0.0.1")
         runtime = ServerRuntime(parts)
         built.append(runtime)

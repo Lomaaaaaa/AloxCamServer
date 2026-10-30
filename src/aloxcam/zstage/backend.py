@@ -3,8 +3,8 @@
 Spec: 08 §3 (controller link, frame rules, GCS frame catalogue, driver errors), §13.2 (LabVIEW driver VI → pipython),
 §13.5 (raw transport); design §3.5.1.
 
-One method per driver VI. Contract for every implementation (``SimStage`` now, a pipython ``PISerial`` backend in
-Phase 2):
+One method per driver VI. Contract for every implementation (``SimStage``; ``PiSerialStage``, the real C-663 on raw
+pyserial, docs/phase2-design.md §3.2):
 
 - numbers are sent with 4 decimals and a ``.`` separator (:func:`format_gcs_float`, LabVIEW ``%.;%.4f``);
 - ``ERR?`` is **never** sent implicitly (pipython ``errcheck = False``): commands refused by the controller leave the

@@ -25,9 +25,9 @@ from aloxcam.wire.messages import (
     ZSetSpeedData,
     ZWaitData,
 )
+from aloxcam.zstage.backend import StageBackend
 from aloxcam.zstage.controller import ZController, ZSession
 from aloxcam.zstage.handlers import Z_HANDLERS, ZContext
-from aloxcam.zstage.sim import SimStage
 
 ZEnv = Any                                                   # tests/zstage/conftest.py
 MakeEnv = Callable[..., ZEnv]
@@ -593,4 +593,4 @@ def test_handlers_use_the_live_session_of_the_shared_controller(make_env: MakeEn
     setup_ok(env)
     assert isinstance(env.ctx.stage, ZController) and env.ctx.stage.session.identity == IDENTITY
     assert isinstance(env.ctx.replies, RecordingReplies) and isinstance(env.ctx.events, RecordingEvents)
-    assert isinstance(env.sim, SimStage)
+    assert isinstance(env.sim, StageBackend)

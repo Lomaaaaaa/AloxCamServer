@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aloxcam"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python re-implementation of the ALOX Camera Server (LabVIEW)"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4"]            # pipython / camera SDK extras are added in phases 2-3
+stage = ["pyserial>=3.5"]         # the real PI Z stage (phase 2); pipython is not used
+dev = ["pytest>=7.4", "pyserial>=3.5"]   # camera SDK extras are added in phase 3
 
 [project.scripts]
 aloxcam = "aloxcam.app:main"
@@ -25,4 +26,8 @@ aloxcam = ["data/*.toml"]
 testpaths = ["tests"]
 pythonpath = ["src", "tools", "tests"]
 addopts = "--import-mode=importlib"
-markers = ["integration: end-to-end tests with a live server on loopback", "slow: > 2 s"]
+markers = [
+    "integration: end-to-end tests with a live server on loopback",
+    "slow: > 2 s",
+    "sim_only(reason): Z stage tests that apply to SimStage only (skipped for the FakeC663 parameter)",
+]

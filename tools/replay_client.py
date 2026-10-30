@@ -604,7 +604,8 @@ def load_script(path: Path, *, extra_vars: Mapping[str, str] = {}) -> Script:
     ``data`` tables are converted with :func:`aloxcam.wire.messages.payload_from_mapping` (a single-field payload
     also accepts a bare value). Additions to the design's format: ``[session] stop_on_fail``; a per-step
     ``timeout_s``; ``expect.connection = "open"`` (the connection must still be open after the step); an IMAGE
-    ``value`` is the hex text of the image bytes (``""`` = empty image); ``poll`` conditions ``until_eq``,
+    ``value`` is the hex text of the image bytes (``""`` = empty image); a DBL / U32 ``value`` may be a number in a
+    string, so that it can come from a variable (``value = "${z_abs}"``); ``poll`` conditions ``until_eq``,
     ``until_ne``, ``until_ge``, ``until_gt``, ``until_le``, ``until_lt``. Default ``reply``: the command's reply
     kind (``none`` for commands without reply), ``any`` for ``code`` and ``raw_hex`` steps, ``none`` for heartbeat
     frames.
@@ -703,6 +704,11 @@ def _value_problem(kind: str, actual: Any, exp: Expect) -> str | None:
         return None if actual == expected else f"value {actual!r}, expected {expected!r}"
     if kind == "BOOL" and not isinstance(expected, bool):
         return f"a BOOL value is true or false, got {expected!r}"
+    if kind in ("DBL", "U32") and isinstance(expected, str):    # "${var}": a number held in a string
+        try:
+            expected = float(expected)
+        except ValueError:
+            return f"a {kind} value is a number, got {expected!r}"
     if not _close(actual, expected, exp.abs_tol, exp.rel_tol):
         tol = f" (abs_tol {exp.abs_tol:g}, rel_tol {exp.rel_tol:g})" if exp.abs_tol or exp.rel_tol else ""
         return f"value {actual!r}, expected {expected!r}{tol}"

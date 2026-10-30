@@ -103,5 +103,5 @@ def test_check_config_production_alox_ini(tmp_path: Path) -> None:
     out = result.stdout
     assert "routing self-check: OK" in out and "result: OK" in out
     assert "127.0.0.1:503  (address from [compat] listen_address, port from alox.ini port_I32)" in out
-    assert "simulation  TRUE" in out
+    assert "  cameras     simulated" in out and "  Z stage     simulated" in out
 

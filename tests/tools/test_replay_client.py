@@ -465,6 +465,29 @@ expect = { error = { status = false, code = 1, source = "x", source_contains = "
     assert report.summary() == "11 step(s) run: 7 passed, 4 failed"
 
 
+def test_numeric_values_from_variables(fake: Any, tmp_path: Path) -> None:
+    server = fake(table({"Get Heartbeat": (ReplyKind.U32, 123), "Z Get Position": (ReplyKind.DBL, 12.5)}))
+    report = run(server, tmp_path, """
+[vars]
+pos = "12.5"
+[[step]]
+command = "Z Get Position"
+expect = { value = "${pos}", abs_tol = 1e-9 }
+[[step]]
+command = "Get Heartbeat"
+expect = { value = "123" }
+[[step]]
+command = "Z Get Position"
+expect = { value = "12.6" }
+[[step]]
+command = "Z Get Position"
+expect = { value = "twelve" }
+""")
+    assert [r.ok for r in report.results] == [True, True, False, False]
+    assert report.result(3).message == "value 12.5, expected 12.6"
+    assert report.result(4).message == "a DBL value is a number, got 'twelve'"
+
+
 def test_none_any_and_missing_replies(fake: Any, tmp_path: Path) -> None:
     server = fake(table({"Get Heartbeat": (ReplyKind.U32, 1), "Cam Refocus Run": (ReplyKind.ACK, None)}))
     report = run(server, tmp_path, header=WIDE_HEADER, text="""

@@ -122,6 +122,7 @@ def test_setup_vel_error_is_not_translated(make_sim: MakeSim, make_controller: M
     assert (info.value.code, info.value.source) == (17, "Controller error")
 
 
+@pytest.mark.sim_only("the fake's XXX latches 2 like a real controller: test_connect_purge_own_error_is_expected")
 def test_connect_purge_discarded_code_is_logged(make_sim: MakeSim, make_controller: MakeController,
                                                 caplog: pytest.LogCaptureFixture) -> None:
     sim, ctl = set_up(make_sim, make_controller)

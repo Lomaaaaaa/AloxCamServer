@@ -3,8 +3,10 @@
 Spec: 08 §3.5 (driver errors), §11 (``GCSTranslateError`` and the codes the Z subsystem relays); design §3.5.2.
 
 The texts are PI's (``pipython.pidevice.gcserror``). LabVIEW's ``GCSTranslateError.vi`` holds a 404-line table and
-pipython ships the same one: the Phase-2 backend uses ``GCSError.translate_error`` and this table is never extended
-into a copy of it (08 §11). Used by :class:`aloxcam.zstage.sim.SimStage`.
+pipython ships the same one; this module keeps only the codes the Z subsystem can produce or relay (08 §11) and is not
+grown into a copy of PI's table. Used by :class:`aloxcam.zstage.sim.SimStage` and by the phase 2 backend
+:class:`aloxcam.zstage.pi_serial.PiSerialStage`, which does not use ``pipython`` (docs/phase2-design.md §2): a code
+missing here is reported without the ``"GCS Error: …"`` text.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ GCS_ERROR_TEXT: Mapping[int, str] = MappingProxyType({
     20: "Macro not found",
     51: "Selected axis is controlled by joystick",
     1008: "Controller is (already) running a macro",
+    -2: "Error while sending data",
+    -3: "Error while receiving data",
     -4: "Not connected (no port with given ID open)",
     -6: "Error while opening port",
     -7: "Timeout error",

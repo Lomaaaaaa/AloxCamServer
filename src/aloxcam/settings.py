@@ -219,14 +219,21 @@ class StageOptions:
     wait_timeout_s: float = 300.0        # General wait for movement to stop (08 §8, Z19)
     do_reference_waits_ready: bool = True  # 08 Z13 fix: #7 then #5 after FNL/FRF
     startup_macro_check: bool = False    # 01 §3.4.3 / 08 §2.4 (A17 default: skip)
-    port_map: Mapping[str, str] = field(default_factory=dict)   # "COM2" → "/dev/ttyUSB0" (Phase 2)
+    port_map: Mapping[str, str] = field(default_factory=dict)   # "COM2" → "/dev/ttyUSB0" or "socket://host:port"
 
 
 @dataclass(frozen=True)
 class SimulationOptions:
-    """``[simulation]``: ``SimCameraBackend`` / ``SimStage`` parameters."""
+    """``[simulation]``: which devices are simulated, and the ``SimCameraBackend`` / ``SimStage`` parameters.
 
-    enabled: bool = False                # also set by --simulate
+    ``enabled`` simulates both devices; ``cameras`` / ``stage`` simulate one of them (docs/phase2-design.md §3.4). The
+    effective choice is :attr:`simulate_cameras` / :attr:`simulate_stage`; the command line can override it
+    (``--simulate``, ``--simulate-cameras``).
+    """
+
+    enabled: bool = False                # also set by --simulate: cameras and stage
+    cameras: bool = False                # simulated cameras only (phase 2: real Z stage)
+    stage: bool = False                  # simulated Z stage only
     camera_names: tuple[str, ...] = ()   # empty = any name opens
     image_width: int = 640
     image_height: int = 480
@@ -240,6 +247,16 @@ class SimulationOptions:
     stage_reference_s: float = 0.2
     stage_identity: str = "(c) aloxcam SimStage, C-663-SIM, 0000000001, 0.0.0"
     stage_dh_macro_s: float = 0.0
+
+    @property
+    def simulate_cameras(self) -> bool:
+        """``enabled or cameras``."""
+        return self.enabled or self.cameras
+
+    @property
+    def simulate_stage(self) -> bool:
+        """``enabled or stage``."""
+        return self.enabled or self.stage
 
 
 @dataclass(frozen=True)

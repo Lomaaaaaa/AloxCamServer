@@ -27,10 +27,12 @@ from aloxcam.zstage.backend import StageBackend
 __all__ = [
     "DH_MACRO",
     "KNOWN_MACROS",
+    "PURGE_OWN_ERROR",
     "READY_POLL_S",
     "SETUP_TIMEOUT_MS",
     "ZController",
     "ZSession",
+    "no_axis_text",
     "serial_from_idn",
 ]
 
@@ -40,6 +42,7 @@ DH_MACRO = "DH"
 KNOWN_MACROS = ("DH", "HOME")            # RMC? answers counted as "macro running" (exact compare, 08 §10)
 SETUP_TIMEOUT_MS = 5000                  # VISA timeout wired by ALOX (08 §3.1)
 READY_POLL_S = 0.05                      # Wait for controller ready.vi: #7 every 50 ms (08 §4.2)
+PURGE_OWN_ERROR = 2                      # "Unknown command": what the purge's own XXX latches on a real controller
 
 _NO_AXIS_TEXT = {                        # per-VI texts of the "No axis specified" pre-check (08 §3.3)
     "MOV": "MOV No axis specified",
@@ -59,6 +62,12 @@ class ZSession:
     axes: tuple[str, ...] = ()
     identity: str = ""
     serial_number: str = ""
+
+
+def no_axis_text(command: str) -> str:
+    """Source text of the driver's "No axis specified" pre-check for ``command`` (08 §3.3), e.g.
+    ``"MVR no axis specified"``; ``"<command> No axis specified"`` for the VIs without a documented text."""
+    return _NO_AXIS_TEXT.get(command, f"{command} No axis specified")
 
 
 def serial_from_idn(identity: str) -> str:
@@ -121,7 +130,7 @@ class ZController:
         """First connected axis; the driver VIs send nothing without one (08 §3.3: error 100)."""
         axes = self._session.axes
         if not axes:
-            raise StageError(Code.PI_DRIVER, _NO_AXIS_TEXT.get(command, f"{command} No axis specified"))
+            raise StageError(Code.PI_DRIVER, no_axis_text(command))
         return axes[0]
 
     @staticmethod
@@ -315,7 +324,9 @@ class ZController:
         port = self._options.port_map.get(s.port_name, s.port_name)
         log.info("Z Setup: opening %s at %d Bd (system %d)", port, s.baudrate, s.axis)
         discarded = backend.connect_rs232(port, s.baudrate, SETUP_TIMEOUT_MS)           # step 1 (purge)
-        if discarded:
+        if discarded == PURGE_OWN_ERROR:                # a real controller keeps only the last error: XXX's own 2
+            log.debug("Z Setup: the connect purge read error 2 (Unknown command), latched by its own XXX")
+        elif discarded:
             log.warning("Z Setup: controller error %d (%s) discarded by the connect purge (08 Z22)",
                         discarded, backend.translate_error(discarded) or "unknown code")
         identity = backend.qidn()                                                       # step 2
